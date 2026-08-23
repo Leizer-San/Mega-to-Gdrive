@@ -61,6 +61,15 @@ def drive_about() -> dict:
     return _QUOTA_CACHE["data"]
 
 
+def _escape_q(s: str) -> str:
+    """
+    Экранировать строку для поискового параметра 'q' в Google Drive API v3.
+    Google Drive требует одинарные кавычки '...' и экранирование \\ и '.
+    """
+    escaped = s.replace("\\", "\\\\").replace("'", "\\'")
+    return f"'{escaped}'"
+
+
 # ── Папки ─────────────────────────────────────────────────────────────────────
 
 def validate_drive_folder(folder_id: str) -> bool:
@@ -77,9 +86,11 @@ def ensure_drive_folder(name: str, parent_id: str) -> str:
     Возвращает ID папки.
     """
     name = name.strip() or "MEGA Import"
+    safe_name = _escape_q(name)
+    safe_parent = _escape_q(parent_id)
     q = (
-        f"name={json.dumps(name)} and "
-        f"'{parent_id}' in parents and "
+        f"name={safe_name} and "
+        f"{safe_parent} in parents and "
         "mimeType='application/vnd.google-apps.folder' and trashed=false"
     )
     found = get_drive().files().list(
@@ -103,16 +114,18 @@ def find_drive_file(name: str, parent_id: str, size: int) -> dict | None:
     Найти файл с совпадающим именем и размером в папке parent_id.
     Возвращает метаданные файла или None.
     """
-    q = (
-        f"name={json.dumps(name)} and "
-        f"'{parent_id}' in parents and trashed=false"
-    )
-    files = get_drive().files().list(
-        q=q, fields="files(id,name,size,mimeType)", pageSize=50
-    ).execute().get("files", [])
-    for f in files:
-        if f.get("size") is not None and int(f["size"]) == int(size):
-            return f
+    safe_name = _escape_q(name)
+    safe_parent = _escape_q(parent_id)
+    q = f"name={safe_name} and {safe_parent} in parents and trashed=false"
+    try:
+        files = get_drive().files().list(
+            q=q, fields="files(id,name,size,mimeType)", pageSize=50
+        ).execute().get("files", [])
+        for f in files:
+            if f.get("size") is not None and int(f["size"]) == int(size):
+                return f
+    except Exception as e:
+        add_log(f"Предупреждение при поиске существующего файла: {e}", level="WARNING")
     return None
 
 
