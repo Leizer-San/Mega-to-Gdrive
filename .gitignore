@@ -1,0 +1,34 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Виртуальное окружение
+venv/
+.venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Системные
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Временные файлы туннелей
+cloudflare.log
+lt.log
+cloudflared-linux-amd64
+
+# Jupyter checkpoint
+.ipynb_checkpoints/

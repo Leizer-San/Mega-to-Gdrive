@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MEGA → Google Drive</title>
+<style>
+:root{
+  --bg:#0b1020;--panel:#121a2e;--panel2:#18213a;
+  --text:#eef3ff;--muted:#98a6c1;--border:#2b3858;
+  --accent:#7c5cff;--cyan:#53c7ff;--green:#38d39f;
+  --yellow:#f3c85b;--red:#ff6d86
+}
+*{box-sizing:border-box}
+body{margin:0;background:linear-gradient(180deg,#090e1b,#10182b);
+     color:var(--text);font:14px Inter,system-ui,-apple-system,Segoe UI,sans-serif}
+.wrap{max-width:900px;margin:auto;padding:24px}
+h1{margin:0 0 6px;font-size:26px}.sub{color:var(--muted);margin-bottom:20px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.panel{background:rgba(18,26,46,.94);border:1px solid var(--border);
+       border-radius:12px;padding:16px;box-shadow:0 8px 24px rgba(0,0,0,.15); position:relative;}
+.metric b{font-size:20px;display:block;margin:4px 0}.muted{color:var(--muted)}
+.bar{height:6px;background:#222e4a;border-radius:999px;overflow:hidden;margin-top:8px;}
+.bar>div{height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--cyan));
+         transition:width .3s}
+input,textarea{width:100%;padding:12px;border-radius:8px;border:1px solid var(--border);
+               background:#0d1426;color:var(--text);outline:none;font-family:monospace;}
+textarea{min-height:90px;resize:vertical}
+button{padding:10px 16px;border:0;border-radius:8px;background:var(--accent);
+       color:#fff;font-weight:600;cursor:pointer;transition:opacity 0.2s;}
+button:hover{opacity:0.9}
+button.secondary{background:#2b3858}button.danger{background:#9f3148}
+.row{display:flex;gap:10px;align-items:center}.row>*{flex:1}
+table{width:100%;border-collapse:collapse;margin-top:10px}
+th,td{padding:10px 8px;border-bottom:1px solid var(--border);text-align:left}
+th{font-size:11px;color:var(--muted);text-transform:uppercase}
+.queued,.retry{color:var(--yellow)}.downloading,.uploading{color:var(--cyan)}
+.done{color:var(--green)}.error{color:var(--red)}
+.small{font-size:12px}
+
+@keyframes pulse { 0% { opacity: 0.6; } 50% { opacity: 1; } 100% { opacity: 0.6; } }
+.pulsing { animation: pulse 1.5s infinite; }
+
+pre#logs {
+    margin: 0;
+    max-height: 200px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+    background: #090f1d;
+    border: 1px solid var(--border);
+    padding: 12px;
+    border-radius: 8px;
+    font-family: monospace;
+    font-size: 12px;
+}
+
+.modal-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.75);z-index:999;backdrop-filter:blur(3px);}
+.modal-content{background:var(--panel);width:90%;max-width:500px;margin:50px auto;border:1px solid var(--border);border-radius:12px;padding:20px;}
+.folder-item{padding:10px;border-bottom:1px solid var(--border);cursor:pointer;display:flex;align-items:center;gap:10px;}
+.folder-item:hover{background:var(--border);}
+.folder-icon{font-size:16px;color:var(--yellow);}
+
+.radio-group{display:flex;flex-direction:column;gap:12px;margin:15px 0;background:#0d1426;padding:15px;border-radius:8px;border:1px solid var(--border);}
+.radio-group label{display:flex;align-items:flex-start;gap:10px;cursor:pointer;line-height:1.4;}
+.radio-group input[type="radio"], .checkbox-group input[type="checkbox"] {margin-top:2px; flex-shrink: 0; width: 16px; height: 16px;}
+.checkbox-group label{display:flex;align-items:flex-start;gap:10px;cursor:pointer;line-height:1.4;}
+
+@media(max-width:600px){.grid{grid-template-columns:1fr}.wrap{padding:14px}.row{flex-direction:column;align-items:stretch}}
+</style>
+</head>
+<body>
+
+<div id="folderModal" class="modal-overlay">
+  <div class="modal-content">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;">
+      <h3 style="margin:0">Выбор папки в Google Drive</h3>
+      <button class="secondary" onclick="$('folderModal').style.display='none'" style="padding:4px 10px">✕</button>
+    </div>
+    <div style="margin-bottom:10px; padding:10px; background:#0d1426; border-radius:6px; border:1px solid var(--border);">
+      <span class="muted small">Текущая папка:</span> <b id="currentFolderName">Мой диск</b>
+    </div>
+    <div id="folderList" style="max-height:300px; overflow-y:auto; border:1px solid var(--border); border-radius:6px; margin-bottom:15px; background:#090f1d;"></div>
+    <div style="display:flex; gap:10px; justify-content:space-between;">
+      <button class="secondary" id="btnUpFolder" onclick="goUpFolder()" disabled>← Назад</button>
+      <button onclick="selectCurrentFolder()">Выбрать эту папку</button>
+    </div>
+  </div>
+</div>
+
+<div id="archiveModal" class="modal-overlay">
+  <div class="modal-content">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;">
+      <h3 id="archiveModalTitle" style="margin:0">Настройка ссылки</h3>
+      <button class="secondary" onclick="cancelArchive()" style="padding:4px 10px">✕</button>
+    </div>
+    <div class="muted small" style="margin-bottom:5px">Ссылка:</div>
+    <div id="archiveModalUrl" style="word-break:break-all; background:#090f1d; padding:10px; border:1px solid var(--border); border-radius:6px; font-family:monospace;" class="small"></div>
+
+    <div class="radio-group">
+       <label><input type="radio" name="zipMode" value="none" checked> 📄 Загружать файлы поштучно (как есть)</label>
+       <label><input type="radio" name="zipMode" value="root"> 📦 Архивировать всю папку в один .zip</label>
+       <label><input type="radio" name="zipMode" value="subfolders"> 🗂 Каждую подпапку в отдельный .zip</label>
+    </div>
+
+    <div id="archiveApplyAllContainer" class="checkbox-group" style="margin-bottom:15px; display:none;">
+      <label>
+        <input type="checkbox" id="archiveApplyAll">
+        <span style="color:var(--yellow)">Применить ко всем оставшимся ссылкам</span>
+      </label>
+    </div>
+
+    <div style="display:flex; gap:10px; justify-content:flex-end;">
+      <button class="secondary" onclick="cancelArchive()">Отмена</button>
+      <button onclick="confirmArchive()">Подтвердить</button>
+    </div>
+  </div>
+</div>
+
+<div class="wrap">
+  <h1>MEGA → Google Drive</h1>
+  <div class="sub">Загрузка файлов напрямую без использования вашего трафика.</div>
+
+  <div class="grid" style="margin-bottom:16px">
+    <div class="panel">
+      <div class="muted small">КВОТА GOOGLE DRIVE</div>
+      <b id="driveText">Загрузка...</b>
+      <div class="bar"><div id="usageBar"></div></div>
+    </div>
+    <div class="panel">
+      <div class="muted small">ТЕКУЩИЙ СТАТУС</div>
+      <b id="msgTop" class="pulsing" style="color:var(--cyan); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">Готово к работе</b>
+      <div id="currentFile" class="small muted" style="margin-top:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">Нет активных задач</div>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-bottom:16px">
+    <div style="display:flex; gap:10px; margin-bottom:12px;">
+      <input id="destination" placeholder="ID папки или root" value="root" style="flex:1">
+      <button class="secondary" onclick="openFolderModal()">📁 Выбрать папку</button>
+    </div>
+    <textarea id="urls" placeholder="Вставьте ссылки MEGA (по одной на строку)..."></textarea>
+    <div class="row" style="margin-top:12px">
+      <button onclick="startAddFlow()">➕ Добавить в очередь</button>
+      <button class="secondary" onclick="startQueue()">▶ Запустить</button>
+      <button class="danger" onclick="stopQueue()">⏹ Остановить</button>
+    </div>
+    <div id="result" class="small muted" style="margin-top:8px; text-align:center;"></div>
+  </div>
+
+  <div class="panel">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <h3 style="margin:0">Очередь загрузки</h3>
+      <button class="secondary small" style="padding:6px 10px;" onclick="clearDone()">Очистить завершённые</button>
+    </div>
+    <div style="overflow-x:auto;">
+      <table>
+        <thead><tr><th>Имя / Ссылка</th><th>Статус</th><th>Прогресс</th><th>Размер</th></tr></thead>
+        <tbody id="tasks"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="panel" style="margin-top:16px;">
+    <h3 style="margin-top:0">Логи (для отладки)</h3>
+    <pre id="logs">Загрузка…</pre>
+  </div>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+function fmt(n){
+  if(n==null)return"—";
+  let x=Number(n),u=["B","KB","MB","GB","TB"],i=0;
+  while(x>=1024&&i<u.length-1){x/=1024;i++}
+  return x.toFixed(1)+" "+u[i];
+}
+function esc(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]))}
+
+async function api(url,opt={}){
+  if(!opt.method || opt.method==="GET"){
+     url += (url.includes('?')?'&':'?') + '_t=' + Date.now();
+  }
+  let r=await fetch(url,opt);
+  return r.json()
+}
+
+let folderStack = [{id: 'root', name: 'Мой диск'}];
+
+async function openFolderModal() {
+  $("folderModal").style.display = "block";
+  if(folderStack.length === 1) await loadFolders('root');
+}
+
+async function loadFolders(parentId) {
+  $("folderList").innerHTML = "<div style='padding:15px;text-align:center;'>Загрузка...</div>";
+  const current = folderStack[folderStack.length - 1];
+  $("currentFolderName").textContent = current.name;
+  $("btnUpFolder").disabled = folderStack.length <= 1;
+
+  try {
+    const res = await api(`/api/folders?parent=${parentId}`);
+    if(res.error) throw new Error(res.error);
+    if(res.folders.length === 0) {
+      $("folderList").innerHTML = "<div class='muted' style='padding:15px;text-align:center;'>Папка пуста</div>";
+      return;
+    }
+    $("folderList").innerHTML = res.folders.map(f => `
+      <div class="folder-item" onclick="enterFolder('${f.id}', '${esc(f.name)}')">
+        <span class="folder-icon">📁</span><span>${esc(f.name)}</span>
+      </div>
+    `).join("");
+  } catch(e) {
+    $("folderList").innerHTML = `<div style="color:var(--red);padding:15px;">Ошибка: ${e.message}</div>`;
+  }
+}
+
+async function enterFolder(id, name) { folderStack.push({id, name}); await loadFolders(id); }
+async function goUpFolder() { if (folderStack.length > 1) { folderStack.pop(); await loadFolders(folderStack[folderStack.length - 1].id); } }
+function selectCurrentFolder() { $("destination").value = folderStack[folderStack.length - 1].id; $("folderModal").style.display='none'; }
+
+let pendingUrls = [];
+let currentTasksPayload = [];
+
+function startAddFlow() {
+  const urlsText = $("urls").value;
+  const urls = urlsText.split("\n").map(x => x.trim()).filter(Boolean);
+  if(urls.length === 0) return;
+
+  pendingUrls = urls;
+  currentTasksPayload = [];
+  processNextPendingUrl();
+}
+
+function processNextPendingUrl() {
+  if(pendingUrls.length === 0) {
+    sendTasksToBackend(currentTasksPayload);
+    return;
+  }
+  let url = pendingUrls[0];
+  $("archiveModalTitle").textContent = `Настройка ссылки (${currentTasksPayload.length + 1} из ${currentTasksPayload.length + pendingUrls.length})`;
+  $("archiveModalUrl").textContent = url;
+
+  $("archiveApplyAll").checked = false;
+  $("archiveApplyAllContainer").style.display = pendingUrls.length > 1 ? "block" : "none";
+  $("archiveModal").style.display = "block";
+}
+
+function confirmArchive() {
+  let applyAll = $("archiveApplyAll").checked && pendingUrls.length > 1;
+  let mode = document.querySelector('input[name="zipMode"]:checked').value;
+
+  let url = pendingUrls.shift();
+  currentTasksPayload.push({url: url, zip_mode: mode});
+
+  if(applyAll) {
+     while(pendingUrls.length > 0) {
+         currentTasksPayload.push({url: pendingUrls.shift(), zip_mode: mode});
+     }
+  }
+
+  $("archiveModal").style.display = "none";
+  processNextPendingUrl();
+}
+
+function cancelArchive() {
+  pendingUrls = [];
+  currentTasksPayload = [];
+  $("archiveModal").style.display = "none";
+}
+
+async function sendTasksToBackend(tasksData) {
+  if(tasksData.length === 0) return;
+  const destination=$("destination").value.trim()||"root";
+  const r=await api("/api/tasks", {
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({tasks: tasksData, destination})
+  });
+  $("result").textContent=r.message||"Готово";
+  if(r.message && !r.message.includes("ошиб")) $("urls").value="";
+  setTimeout(()=>$("result").textContent="", 3000);
+  refresh();
+}
+
+async function refresh(){
+  try{
+    const s=await api("/api/status");
+    const q=s.quota||{};
+
+    if (q.limit) {
+       $("driveText").innerHTML = `${fmt(q.usage)} <span class="muted small">из</span> ${fmt(q.limit)}`;
+       $("usageBar").style.width = ((q.usage/q.limit)*100) + "%";
+    }
+
+    $("msgTop").textContent = s.state.message || "Готово к работе";
+    $("currentFile").textContent = s.state.current_file || "Нет активных задач";
+    $("logs").textContent=(s.state.logs||[]).join("\n")||"Логи пусты";
+
+    $("tasks").innerHTML=(s.tasks||[]).map(t=>{
+      let progText = Number(t.progress||0).toFixed(1) + "%";
+      if(t.status === 'uploading' && (t.progress == null || t.progress === 0)) {
+         progText = "⏳ передача...";
+      }
+      return `
+      <tr>
+        <td class="small" style="max-width:250px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${esc(t.name||t.url)}">
+          ${t.zip_mode !== 'none' ? '📦 ' : ''}${esc(t.name||t.url)}
+        </td>
+        <td class="${esc(t.status)}">${esc(t.status)}</td>
+        <td>${progText}</td>
+        <td>${fmt(t.bytes_total||0)}</td>
+      </tr>`;
+    }).join("");
+  }catch(e){}
+}
+
+async function startQueue(){ await api("/api/start",{method:"POST"}); refresh(); }
+async function stopQueue(){ await api("/api/stop",{method:"POST"}); refresh(); }
+async function clearDone(){ await api("/api/clear_done",{method:"POST"}); refresh(); }
+
+setInterval(refresh,2000); refresh();
+</script>
+</body>
+</html>
