@@ -1,6 +1,11 @@
 """
 mega.py — Всё, что связано с MEGA: скачивание, парсинг прогресса,
           работа с локальной файловой системой и упаковка в ZIP.
+
+Использует megatools (megadl) вместо MEGAcmd:
+  - Чёткий ненулевой exit code при квоте
+  - "Transfer limit exceeded" пишется в stderr — не теряется
+  - Нет зависаний при квоте: процесс сам завершается
 """
 import os
 import re
@@ -23,42 +28,68 @@ def validate_mega_url(url: str) -> bool:
     return bool(MEGA_URL_RE.match(url.strip()))
 
 
-# ── Скачивание ────────────────────────────────────────────────────────────────
+# ── Скачивание (megadl) ───────────────────────────────────────────────────────
 
-def mega_get(url: str, target_dir: Path) -> None:
+# Ключевые слова квоты в выводе megadl (регистронезависимо)
+_QUOTA_KEYWORDS = [
+    "transfer limit",
+    "transfer quota",
+    "quota exceeded",
+    "bandwidth",
+    "over quota",
+    "509",
+]
+
+# Прогресс-индикаторы megadl: строки вида "  12.34 MB/123.45 MB (10%) 5.6 MB/s"
+_PROGRESS_RE = re.compile(
+    r"(\d+\.?\d*\s*[KMGT]?B)\s*/\s*(\d+\.?\d*\s*[KMGT]?B)"
+    r"(?:\s*\((\d+)%\))?(?:\s*([\d.]+\s*[KMGT]?B/s))?",
+    re.I,
+)
+
+
+def mega_download(url: str, target_dir: Path) -> None:
     """
-    Скачать файл/папку по MEGA-ссылке в target_dir с помощью mega-get.
+    Скачать файл/папку по MEGA-ссылке в target_dir с помощью megadl.
 
-    - Парсит вывод процесса и обновляет STATE.message каждую секунду.
-    - Бросает RuntimeError при ошибке квоты или таймауте (нет прогресса >60 с).
+    Преимущества megadl перед MEGAcmd:
+    - Возвращает ненулевой exit code при квоте (+ пишет "Transfer limit exceeded" в stderr)
+    - Чёткий парсинг прогресса через регулярное выражение
+    - Нет зависания при квоте: процесс сам завершается с ошибкой
+
+    Бросает RuntimeError:
+    - При исчерпании квоты MEGA
+    - При любой другой ошибке скачивания
+    - При таймауте (нет вывода > 90 сек)
     """
     target_dir = Path(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    cmd = ["mega-get", url, str(target_dir)]
-    add_log(f"MEGA: начинаю скачивание {url}")
+    cmd = ["megadl", "--path", str(target_dir), url]
+    add_log(f"MEGA (megadl): начинаю скачивание {url}")
 
     process = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stderr=subprocess.PIPE,   # stderr отдельно — там живут ошибки квоты
         text=True,
         errors="replace",
         bufsize=1,
+        cwd=str(target_dir),
     )
 
-    lines: list[str] = []
-    last_update_time    = time.time()
-    last_progress_change = time.time()
-    last_seen_progress  = ""
+    last_output_time = time.time()
+    last_update_time = time.time()
+    stderr_lines: list[str] = []
 
     while True:
-        retcode = process.poll()
-        if retcode is not None:
-            break
+        # Проверяем stop_event
+        if stop_event.is_set():
+            process.kill()
+            process.wait()
+            raise RuntimeError("Остановлено пользователем")
 
-        # Таймаут: если прогресс не меняется 60 с — вероятна квота MEGA
-        if time.time() - last_progress_change > 60:
+        retcode = process.poll()
             process.kill()
             raise RuntimeError(
                 "⚠️ Превышена квота MEGA или зависло соединение "
