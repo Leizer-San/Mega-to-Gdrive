@@ -134,7 +134,12 @@ def clear_finished_tasks() -> None:
 
 
 def clear_all_tasks() -> None:
-    """Очистить всю очередь задач."""
+    """Очистить всю очередь задач и удалить временные папки."""
+    import shutil
     with lock:
+        for t in STATE["tasks"]:
+            td = DOWNLOAD_DIR / t["id"]
+            shutil.rmtree(td, ignore_errors=True)
         STATE["tasks"] = []
         save_tasks_to_disk()
+

@@ -163,6 +163,8 @@ def process_task(task: dict) -> None:
             current_file=None,
         )
         add_log("Импорт завершён успешно", "SUCCESS")
+        # Удаляем локальные файлы только после успешной загрузки в Google Drive
+        shutil.rmtree(task_dir, ignore_errors=True)
 
     except Exception as exc:
         err       = str(exc)
@@ -175,9 +177,9 @@ def process_task(task: dict) -> None:
         update_state(error=err, message="Ошибка импорта")
         add_log(f"Критическая ошибка: {err}", "ERROR")
         add_log(traceback.format_exc(), "TRACE")
+        # ПРИМЕЧАНИЕ: При ошибке/квоте task_dir НЕ удаляется,
+        # чтобы при повторе или смене прокси mega-get продолжил скачивание с места остановки.
 
-    finally:
-        shutil.rmtree(task_dir, ignore_errors=True)
 
 
 def worker() -> None:
