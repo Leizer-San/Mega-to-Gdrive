@@ -80,18 +80,37 @@ def mega_get(url: str, target_dir: Path) -> None:
     stderr_quota_found = threading.Event()
 
     def _read_stderr():
-        try:
-            for line in process.stderr:
-                line = line.rstrip()
-                if not line:
-                    continue
-                clean = re.sub(r"[\x00-\x1F\x7F-\x9F]", "", line)
+        for line in process.stderr:
+            line = line.rstrip()
+            if not line:
+                continue
+            clean = re.sub(r"[\x00-\x1F\x7F-\x9F]", "", line)
+
+            # Квота → немедленно сигналим основному потоку
+            if _is_quota_line(clean):
                 stderr_lines.append(clean)
                 add_log(clean, "MEGA-ERR")
-                if _is_quota_line(clean):
-                    stderr_quota_found.set()
-        except Exception:
-            pass
+                stderr_quota_found.set()
+                continue
+
+            line_upper = clean.upper()
+
+            # Прогресс-строки (TRANSFERRING, %, B/S) → обновляем статус, не логируем
+            is_progress = any(
+                x in line_upper
+                for x in ["TRANSFERRING", "PROCEEDING", "%", "B/S", "DOWNLOADED"]
+            )
+            if is_progress:
+                # Парсим прогресс: ищем "(676/1073 MB:  63.02 %)" или просто "%"
+                match = re.search(r"\(([^)]+)\)", clean)
+                if match and ("%" in match.group(1) or "B" in match.group(1)):
+                    update_state(message=f"MEGA: {match.group(1).strip()}")
+                else:
+                    update_state(message="Скачивание из MEGA...")
+            else:
+                # Остальное — в лог (ошибки, статус, предупреждения)
+                stderr_lines.append(clean)
+                add_log(clean, "MEGA-ERR")
 
     stderr_thread = threading.Thread(target=_read_stderr, daemon=True)
     stderr_thread.start()
