@@ -3,9 +3,10 @@ proxy.py — Менеджер пула прокси для MEGA.
 
 Возможности:
   - Парсинг различных форматов (ip:port, ip:port:user:pass, protocol://user:pass@ip:port)
+  - Полная поддержка прокси с логином и паролем (URL-encoding)
   - Автоопределение протокола (HTTP, SOCKS5, SOCKS4) и проверка доступности с замером пинга
   - Управление настройками mega-proxy (применение, сброс, ротация)
-  - Сброс заблокированных локальных сессий MEGAcmd (~/.megaCmd/session)
+  - Контроль работы демона mega-cmd-server (автоматический перезапуск при сбоях)
   - Автоматическое сохранение/загрузка списка с Google Drive
 """
 from __future__ import annotations
@@ -16,6 +17,7 @@ import socket
 import subprocess
 import threading
 import time
+import urllib.parse
 import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -27,35 +29,35 @@ from .config import PROXIES_FILE
 from .helpers import add_log
 
 
-# ── Сброс анонимной сессии MEGAcmd ───────────────────────────────────────────
+# ── Управление демоном MEGAcmd ────────────────────────────────────────────────
 
-def reset_megacmd_session() -> None:
-    """
-    Сбросить локальную анонимную сессию MEGAcmd.
-    MEGAcmd сохраняет session ID в ~/.megaCmd/session. Если на этом session ID
-    сработал лимит квоты, MEGA сервер будет отдавать 'Access denied' на всех прокси,
-    пока файл сессии не будет очищен.
-    """
+def ensure_megacmd_server_running() -> bool:
+    """Убедиться, что mega-cmd-server работает и отвечает."""
     try:
-        subprocess.run(["mega-quit"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+        res = subprocess.run(
+            ["mega-version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=8,
+        )
+        if res.returncode == 0 and "stopped" not in res.stdout.lower():
+            return True
     except Exception:
         pass
 
-    mega_dirs = [
-        Path.home() / ".megaCmd",
-        Path("/root/.megaCmd"),
-        Path("/content/.megaCmd"),
-    ]
-    for d in mega_dirs:
-        if d.exists():
-            for fname in ["session", "megacmd.lock"]:
-                f = d / fname
-                if f.exists():
-                    try:
-                        f.unlink()
-                    except Exception:
-                        pass
-    time.sleep(0.5)
+    # Если сервер не отвечает — запускаем его
+    try:
+        subprocess.Popen(
+            ["mega-cmd-server"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        time.sleep(2)
+    except Exception:
+        pass
+    return True
 
 
 # ── Парсинг строк прокси ──────────────────────────────────────────────────────
@@ -128,15 +130,24 @@ def parse_proxy_string(text: str) -> dict | None:
 
 
 def format_proxy_url(p: dict) -> str:
-    """Вернуть URL прокси для mega-proxy."""
+    """Вернуть полный URL прокси для mega-proxy с поддержкой логина/пароля."""
     proto = p.get("protocol", "http")
     if proto in ("unknown", "https"):
         proto = "http"
     if proto == "socks5":
         proto = "socks5h"  # DNS resolution via proxy
+    elif proto == "socks4":
+        proto = "socks4a"
 
     host = p["host"]
     port = p["port"]
+    user = p.get("username")
+    pwd = p.get("password")
+
+    if user and pwd:
+        safe_user = urllib.parse.quote(user, safe="")
+        safe_pwd = urllib.parse.quote(pwd, safe="")
+        return f"{proto}://{safe_user}:{safe_pwd}@{host}:{port}"
     return f"{proto}://{host}:{port}"
 
 
@@ -156,7 +167,9 @@ def _test_single_protocol(host: str, port: int, protocol: str, username: str | N
         scheme = "socks4a"
 
     if username and password:
-        proxy_url = f"{scheme}://{username}:{password}@{host}:{port}"
+        safe_u = urllib.parse.quote(username, safe="")
+        safe_p = urllib.parse.quote(password, safe="")
+        proxy_url = f"{scheme}://{safe_u}:{safe_p}@{host}:{port}"
     else:
         proxy_url = f"{scheme}://{host}:{port}"
 
@@ -324,19 +337,17 @@ class ProxyManager:
     # ── Управление MEGAcmd Proxy ──────────────────────────────────────────────
 
     def apply_megacmd_proxy(self, proxy: dict) -> bool:
-        """Применить прокси в MEGAcmd через mega-proxy со сбросом старой сессии квоты."""
-        reset_megacmd_session()
+        """Применить прокси в MEGAcmd через mega-proxy."""
+        ensure_megacmd_server_running()
 
         url = format_proxy_url(proxy)
         cmd = ["mega-proxy", url]
-        if proxy.get("username"):
-            cmd.append(f"--username={proxy['username']}")
-        if proxy.get("password"):
-            cmd.append(f"--password={proxy['password']}")
 
-        add_log(f"PROXY: Применяю mega-proxy -> {url}")
-        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        if res.returncode == 0:
+        display_auth = " (с логином)" if proxy.get("username") else ""
+        add_log(f"PROXY: Применяю mega-proxy -> {proxy.get('protocol', 'http').upper()}://{proxy['host']}:{proxy['port']}{display_auth}")
+        
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=15)
+        if res.returncode == 0 or "PROXY_CUSTOM" in res.stdout:
             with self._lock:
                 self.active_proxy_id = proxy["id"]
             add_log(f"✅ Прокси успешно подключен: {proxy['host']}:{proxy['port']} ({proxy.get('protocol', '').upper()})")
@@ -346,9 +357,9 @@ class ProxyManager:
             return False
 
     def disable_megacmd_proxy(self) -> None:
-        """Отключить прокси в MEGAcmd (прямое соединение) со сбросом сессии."""
-        reset_megacmd_session()
-        subprocess.run(["mega-proxy", "--none"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        """Отключить прокси в MEGAcmd (прямое соединение)."""
+        ensure_megacmd_server_running()
+        subprocess.run(["mega-proxy", "--none"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
         with self._lock:
             self.active_proxy_id = None
         add_log("PROXY: Отключен (используется прямое подключение)")

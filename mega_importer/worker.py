@@ -57,6 +57,19 @@ def process_task(task: dict) -> None:
                 err_msg = str(download_err)
                 err_lower = err_msg.lower()
 
+                # 1. Если пользователь нажал "Остановить" — сразу выходим без ротации
+                if stop_event.is_set() or "остановлено пользователем" in err_lower:
+                    raise RuntimeError("Остановлено пользователем")
+
+                # 2. Если упал демон mega-cmd-server — перезапускаем его и пробуем снова
+                if "mega-cmd-server process seems to have stopped" in err_lower or "unable to connect to service" in err_lower:
+                    add_log("⚠️ Перезапуск демона mega-cmd-server...", "WARNING")
+                    from .proxy import ensure_megacmd_server_running
+                    ensure_megacmd_server_running()
+                    time.sleep(2)
+                    continue
+
+                # 3. Детекция квоты и сбоев прокси
                 is_quota = any(
                     kw in err_lower
                     for kw in ["квота", "quota", "bandwidth", "зависло", "нет прогресса", "limit"]
@@ -93,6 +106,7 @@ def process_task(task: dict) -> None:
 
                 # Если не квота или прокси закончились — пробрасываем ошибку дальше
                 raise download_err
+
 
         # ── 2. ZIP-упаковка ──────────────────────────────────────────────────
         apply_zip_mode(task_dir, zip_mode)
