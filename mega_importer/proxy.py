@@ -337,24 +337,42 @@ class ProxyManager:
     # ── Управление MEGAcmd Proxy ──────────────────────────────────────────────
 
     def apply_megacmd_proxy(self, proxy: dict) -> bool:
-        """Применить прокси в MEGAcmd через mega-proxy."""
+        """Применить прокси в MEGAcmd через mega-proxy с передачей флагов авторизации."""
         ensure_megacmd_server_running()
 
-        url = format_proxy_url(proxy)
-        cmd = ["mega-proxy", url]
+        proto = (proxy.get("protocol") or "http").lower().strip()
+        if proto in ("unknown", "https"):
+            proto = "http"
+        elif proto == "socks5":
+            proto = "socks5h"
+        elif proto == "socks4":
+            proto = "socks4a"
 
-        display_auth = " (с логином)" if proxy.get("username") else ""
-        add_log(f"PROXY: Применяю mega-proxy -> {proxy.get('protocol', 'http').upper()}://{proxy['host']}:{proxy['port']}{display_auth}")
+        host = proxy["host"]
+        port = proxy["port"]
+        user = proxy.get("username")
+        pwd  = proxy.get("password")
+
+        url = f"{proto}://{host}:{port}"
+        cmd = ["mega-proxy", url]
+        if user:
+            cmd.append(f"--username={user}")
+        if pwd:
+            cmd.append(f"--password={pwd}")
+
+        display_auth = " (с логином и паролем)" if user else ""
+        add_log(f"PROXY: Применяю mega-proxy -> {proto.upper()}://{host}:{port}{display_auth}")
         
         res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=15)
         if res.returncode == 0 or "PROXY_CUSTOM" in res.stdout:
             with self._lock:
                 self.active_proxy_id = proxy["id"]
-            add_log(f"✅ Прокси успешно подключен: {proxy['host']}:{proxy['port']} ({proxy.get('protocol', '').upper()})")
+            add_log(f"✅ Прокси успешно подключен: {host}:{port} ({proto.upper()})")
             return True
         else:
             add_log(f"⚠️ Ошибка настройки mega-proxy: {res.stdout.strip()}", level="WARNING")
             return False
+
 
     def disable_megacmd_proxy(self) -> None:
         """Отключить прокси в MEGAcmd (прямое соединение)."""
