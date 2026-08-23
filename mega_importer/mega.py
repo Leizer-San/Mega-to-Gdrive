@@ -108,8 +108,6 @@ def mega_get(url: str, target_dir: Path) -> None:
     last_seen_progress = ""
     last_ui_update_time = 0.0
 
-    FREEZE_TIMEOUT = 45  # 45 секунд без сдвига прогресса = исчерпание квоты / обрыв
-
     while True:
         if stop_event.is_set():
             process.kill()
@@ -132,9 +130,10 @@ def mega_get(url: str, target_dir: Path) -> None:
 
                 # 1. Проверяем явное сообщение о квоте
                 if _is_quota_line(clean):
+                    wait_hint = _get_quota_wait_hint(clean)
                     process.kill()
                     process.wait()
-                    raise RuntimeError("⚠️ Исчерпана квота MEGA (требуется смена IP/сессии)")
+                    raise RuntimeError(f"⚠️ Исчерпана квота MEGA{wait_hint} (требуется смена IP/прокси)")
 
                 line_upper = clean.upper()
                 is_progress = any(
@@ -171,18 +170,31 @@ def mega_get(url: str, target_dir: Path) -> None:
             break
 
         # 2. Детекция скрытого исчерпания квоты / зависания:
-        # Если нет данных вообще или прогресс остановился на одном месте > 45 сек
+        # Извлекаем процент прогресса (например 99.30%)
+        pct_match = re.search(r"([\d.]+)\s*%", last_seen_progress)
+        pct = float(pct_match.group(1)) if pct_match else 0.0
+
+        # На финализации (>=85%) MEGAcmd выполняет расшифровку AES и проверку хешей,
+        # поэтому даём расширенный таймаут 240 сек (4 минуты).
+        freeze_threshold = 240 if pct >= 85.0 else 90
+
         time_since_progress = now - last_progress_change_time
         time_since_activity = now - last_activity_time
 
-        if time_since_progress > FREEZE_TIMEOUT and time_since_activity > 10:
+        # Информируем пользователя о финализации
+        if pct >= 85.0 and time_since_progress > 6 and (now - last_ui_update_time > 2.0):
+            update_state(message=f"MEGA: {last_seen_progress} (расшифровка и финализация...)")
+            last_ui_update_time = now
+
+        if time_since_progress > freeze_threshold and time_since_activity > 15:
             process.kill()
             process.wait()
             prog_info = f" на отметке [{last_seen_progress}]" if last_seen_progress else ""
             raise RuntimeError(
                 f"⚠️ Исчерпана квота MEGA или зависло соединение{prog_info}: "
-                f"нет прогресса более {FREEZE_TIMEOUT} сек. Требуется смена IP/сессии."
+                f"нет прогресса более {freeze_threshold} сек. Требуется смена IP/прокси."
             )
+
 
     rc = process.wait()
     t_out.join(timeout=2)
