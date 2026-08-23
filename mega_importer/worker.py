@@ -10,7 +10,7 @@ import traceback
 from .config import DOWNLOAD_DIR, MAX_RETRIES, RESERVE_BYTES
 from .drive import drive_about, ensure_drive_folder, upload_file
 from .helpers import add_log, format_bytes, update_state
-from .mega import all_files, apply_zip_mode, build_drive_tree, local_tree_stats, mega_download
+from .mega import all_files, apply_zip_mode, build_drive_tree, local_tree_stats, mega_get
 from .state import (
     STATE, get_next_task, lock, stop_event, update_task,
 )
@@ -46,7 +46,7 @@ def process_task(task: dict) -> None:
         )
 
         # ── 1. Скачиваем из MEGA ─────────────────────────────────────────────
-        mega_download(url, task_dir)
+        mega_get(url, task_dir)
 
         # ── 2. ZIP-упаковка ──────────────────────────────────────────────────
         apply_zip_mode(task_dir, zip_mode)
