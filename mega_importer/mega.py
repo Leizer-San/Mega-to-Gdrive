@@ -47,13 +47,15 @@ def mega_get(url: str, target_dir: Path) -> None:
     """
     Скачать файл/папку по MEGA-ссылке в target_dir с помощью mega-get.
 
-    Улучшения:
-    - stderr читается отдельным потоком параллельно
-    - Прогресс-строки направляются в статус (не засоряют лог)
-    - Точные регулярные выражения для детекции квоты (без ложных срабатываний на 100%)
-    - Если процесс завершился успешно (rc=0) и файлы есть — гарантированный успех
-    - Таймаут 90 сек сбрасывается при любой активности
+    Особенности:
+    - Потоки stdout и stderr вычитываются параллельно в неблокирующую очередь
+    - Таймер зависания (45 сек) отслеживает сдвиг прогресса: если MEGA исчерпала квоту
+      и перестала передавать данные, процесс немедленно прерывается с ясным сообщением
+    - Прогресс в реальном времени транслируется в статус веб-интерфейса
     """
+    import queue
+    import threading
+
     target_dir = Path(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
 
@@ -69,51 +71,33 @@ def mega_get(url: str, target_dir: Path) -> None:
         bufsize=1,
     )
 
-    # ── Читаем stderr в фоновом потоке ──────────────────────────────────────
-    import threading
+    output_queue: queue.Queue = queue.Queue()
     stderr_lines: list[str] = []
-    stderr_quota_found = threading.Event()
-
-    def _read_stderr():
-        for line in process.stderr:
-            line = line.rstrip()
-            if not line:
-                continue
-            clean = re.sub(r"[\x00-\x1F\x7F-\x9F]", "", line)
-            line_upper = clean.upper()
-
-            # Сначала проверяем, не прогресс ли это (TRANSFERRING ...)
-            is_progress = any(
-                x in line_upper
-                for x in ["TRANSFERRING", "PROCEEDING", "%", "B/S", "DOWNLOADED"]
-            )
-            if is_progress:
-                match = re.search(r"\(([^)]+)\)", clean)
-                if match and ("%" in match.group(1) or "B" in match.group(1)):
-                    update_state(message=f"MEGA: {match.group(1).strip()}")
-                else:
-                    update_state(message="Скачивание из MEGA...")
-                continue
-
-            # Если не прогресс — проверяем на квоту
-            if _is_quota_line(clean):
-                stderr_lines.append(clean)
-                add_log(clean, "MEGA-ERR")
-                stderr_quota_found.set()
-                continue
-
-            # Прочие ошибки/предупреждения логируем
-            stderr_lines.append(clean)
-            add_log(clean, "MEGA-ERR")
-
-    stderr_thread = threading.Thread(target=_read_stderr, daemon=True)
-    stderr_thread.start()
-
-    # ── Основной цикл чтения stdout ──────────────────────────────────────────
     stdout_lines: list[str] = []
-    last_update_time    = time.time()
-    last_activity_time  = time.time()
-    last_seen_progress  = ""
+
+    def _reader(pipe, stream_name: str):
+        try:
+            for line in iter(pipe.readline, ""):
+                output_queue.put((stream_name, line))
+        except Exception:
+            pass
+        finally:
+            try:
+                pipe.close()
+            except Exception:
+                pass
+
+    t_out = threading.Thread(target=_reader, args=(process.stdout, "stdout"), daemon=True)
+    t_err = threading.Thread(target=_reader, args=(process.stderr, "stderr"), daemon=True)
+    t_out.start()
+    t_err.start()
+
+    last_activity_time = time.time()
+    last_progress_change_time = time.time()
+    last_seen_progress = ""
+    last_ui_update_time = 0.0
+
+    FREEZE_TIMEOUT = 45  # 45 секунд без сдвига прогресса = исчерпание квоты / обрыв
 
     while True:
         if stop_event.is_set():
@@ -121,100 +105,104 @@ def mega_get(url: str, target_dir: Path) -> None:
             process.wait()
             raise RuntimeError("Остановлено пользователем")
 
-        if stderr_quota_found.is_set():
-            process.kill()
-            process.wait()
-            raise RuntimeError("⚠️ Исчерпана квота MEGA (требуется смена IP/сессии)")
+        # Неблокирующее получение строки из очереди
+        try:
+            stream_name, raw_line = output_queue.get(timeout=0.5)
+            has_line = True
+        except queue.Empty:
+            has_line = False
 
+        now = time.time()
+
+        if has_line and raw_line:
+            clean = re.sub(r"[\x00-\x1F\x7F-\x9F]", "", raw_line.rstrip())
+            if clean:
+                last_activity_time = now
+
+                # 1. Проверяем явное сообщение о квоте
+                if _is_quota_line(clean):
+                    process.kill()
+                    process.wait()
+                    raise RuntimeError("⚠️ Исчерпана квота MEGA (требуется смена IP/сессии)")
+
+                line_upper = clean.upper()
+                is_progress = any(
+                    x in line_upper
+                    for x in ["TRANSFERRING", "PROCEEDING", "%", "B/S", "DOWNLOADED"]
+                )
+
+                if is_progress:
+                    match = re.search(r"\(([^)]+)\)", clean)
+                    if match and ("%" in match.group(1) or "B" in match.group(1)):
+                        prog_text = match.group(1).strip()
+                        # Если изменились байты / проценты — сбрасываем таймер зависания
+                        if prog_text != last_seen_progress:
+                            last_seen_progress = prog_text
+                            last_progress_change_time = now
+                        msg = f"MEGA: {prog_text}"
+                    else:
+                        msg = "Скачивание из MEGA..."
+
+                    if now - last_ui_update_time > 0.8:
+                        update_state(message=msg)
+                        last_ui_update_time = now
+                else:
+                    if stream_name == "stderr":
+                        stderr_lines.append(clean)
+                        add_log(clean, "MEGA-ERR")
+                    else:
+                        stdout_lines.append(clean)
+                        add_log(clean, "MEGA")
+
+        # Проверяем, завершился ли процесс
         retcode = process.poll()
-        if retcode is not None:
+        if retcode is not None and output_queue.empty():
             break
 
-        # Таймаут: нет активности > 90 секунд
-        if time.time() - last_activity_time > 90:
+        # 2. Детекция скрытого исчерпания квоты / зависания:
+        # Если нет данных вообще или прогресс остановился на одном месте > 45 сек
+        time_since_progress = now - last_progress_change_time
+        time_since_activity = now - last_activity_time
+
+        if time_since_progress > FREEZE_TIMEOUT and time_since_activity > 10:
             process.kill()
             process.wait()
+            prog_info = f" на отметке [{last_seen_progress}]" if last_seen_progress else ""
             raise RuntimeError(
-                "⚠️ Нет активности от mega-get более 90 сек — "
-                "вероятно исчерпана квота или обрыв соединения"
+                f"⚠️ Исчерпана квота MEGA или зависло соединение{prog_info}: "
+                f"нет прогресса более {FREEZE_TIMEOUT} сек. Требуется смена IP/сессии."
             )
 
-        line = process.stdout.readline()
-        if not line:
-            time.sleep(0.05)
-            continue
-
-        line = line.strip()
-        if not line:
-            continue
-
-        last_activity_time = time.time()
-        stdout_lines.append(line)
-        if len(stdout_lines) > 100:
-            stdout_lines.pop(0)
-
-        # Проверяем квоту в stdout
-        if _is_quota_line(line):
-            process.kill()
-            process.wait()
-            raise RuntimeError("⚠️ Исчерпана квота MEGA (требуется смена IP/сессии)")
-
-        # Прогресс-строки
-        line_upper = line.upper()
-        is_progress = any(
-            x in line_upper
-            for x in ["TRANSFERRING", "PROCEEDING", "%", "B/S", "DOWNLOADED"]
-        )
-
-        if is_progress:
-            now = time.time()
-            if line != last_seen_progress:
-                last_seen_progress = line
-
-            if now - last_update_time > 1.0:
-                match = re.search(r"\(([^)]+)\)", line)
-                if match and ("%" in match.group(1) or "B" in match.group(1)):
-                    clean_msg = f"MEGA: {match.group(1).strip()}"
-                else:
-                    clean_msg = "Скачивание из MEGA..."
-                update_state(message=clean_msg)
-                last_update_time = now
-        else:
-            clean_line = re.sub(r"[\x00-\x1F\x7F-\x9F]", "", line)
-            update_state(message=clean_line[-100:])
-            add_log(clean_line, "MEGA")
-
     rc = process.wait()
-    stderr_thread.join(timeout=3)
+    t_out.join(timeout=2)
+    t_err.join(timeout=2)
 
     # ── Анализ результата ─────────────────────────────────────────────────────
 
-    # Проверяем скачанные файлы
     files_downloaded = list(target_dir.rglob("*"))
     actual_files = [f for f in files_downloaded if f.is_file()]
 
-    # 1. Если процесс завершился успешно (rc == 0) и файлы на месте — это 100% УСПЕХ!
+    # Успех
     if rc == 0 and actual_files:
         return
 
-    # 2. Если файлов нет или rc != 0 — проверяем не квота ли это
+    # Ошибки
     all_output = "\n".join(stderr_lines + stdout_lines)
-    if stderr_quota_found.is_set() or _is_quota_line(all_output):
+    if _is_quota_line(all_output):
         raise RuntimeError("⚠️ Исчерпана квота MEGA (требуется смена IP/сессии)")
 
-    # 3. Ненулевой код завершения с контекстом
     if rc != 0:
         err_context = "\n".join(
             stderr_lines[-10:] or stdout_lines[-10:]
         ) or f"mega-get завершился с кодом {rc}"
         raise RuntimeError(f"mega-get завершился с ошибкой (код {rc}):\n{err_context}")
 
-    # 4. rc == 0, но файлов нет — тихий сбой
     if not actual_files:
         raise RuntimeError(
             "mega-get завершился без ошибок, но файлы не были сохранены. "
             "Проверьте доступность ссылки или квоту MEGA."
         )
+
 
 
 
