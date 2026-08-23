@@ -40,12 +40,20 @@ _QUOTA_KEYWORDS = [
     "509",
 ]
 
-# Прогресс-индикаторы megadl: строки вида "  12.34 MB/123.45 MB (10%) 5.6 MB/s"
+# Реальный формат megadl:
+# "filename.ext: 91.19% - 2.6 MiB (2,744,088 bytes) of 2.9 MiB (2.6 MiB/s)"
 _PROGRESS_RE = re.compile(
-    r"(\d+\.?\d*\s*[KMGT]?B)\s*/\s*(\d+\.?\d*\s*[KMGT]?B)"
-    r"(?:\s*\((\d+)%\))?(?:\s*([\d.]+\s*[KMGT]?B/s))?",
+    r"^(.+?):\s*"                          # имя файла
+    r"([\d.]+)%"                            # процент
+    r"\s*[-\u2013]+\s*"                     # тире (обычное или em-dash)
+    r"([\d.,]+\s*[KMGT]?i?B)"             # скачано (читаемый размер)
+    r"\s*\([\d,]+\s*bytes\)"               # скачано в байтах — игнорируем
+    r"\s+of\s+"                             # of
+    r"([\d.,]+\s*[KMGT]?i?B)"             # всего (читаемый размер)
+    r"(?:\s+\(([\d.,]+\s*[KMGT]?i?B/s)\))?",  # скорость (опционально)
     re.I,
 )
+
 
 
 def mega_download(url: str, target_dir: Path) -> None:
@@ -164,21 +172,29 @@ def _is_quota_error(text: str) -> bool:
 def _parse_progress(line: str) -> str | None:
     """
     Разобрать строку прогресса megadl.
-    Пример: '  45.23 MB/200.00 MB (22%) 8.5 MB/s'
-    Возвращает человекочитаемое сообщение или None.
+
+    Реальный формат:
+      'filename.png: 91.19% – 2.6 MiB (2,744,088 bytes) of 2.9 MiB (2.6 MiB/s)'
+
+    Возвращает красивое сообщение для UI или None если строка не прогрессная.
     """
     # Убираем ANSI-escape последовательности
     clean = re.sub(r"\x1b\[[0-9;]*m", "", line)
-    m = _PROGRESS_RE.search(clean)
-    if m:
-        done, total, pct, speed = m.groups()
-        parts = [f"MEGA: {done} / {total}"]
-        if pct:
-            parts.append(f"({pct}%)")
-        if speed:
-            parts.append(f"@ {speed}")
-        return " ".join(parts)
-    return None
+    m = _PROGRESS_RE.match(clean.strip())
+    if not m:
+        return None
+
+    filename, pct, done, total, speed = m.groups()
+
+    # Обрезаем длинное имя файла
+    name = filename.strip()
+    if len(name) > 30:
+        name = "…" + name[-28:]
+
+    parts = [f"📥 {name}  {pct}%  {done} / {total}"]
+    if speed:
+        parts.append(f"@ {speed}")
+    return "  ".join(parts)
 
 
 # ── Утилиты для работы с локальными файлами ──────────────────────────────────
