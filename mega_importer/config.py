@@ -13,6 +13,7 @@ DOWNLOAD_DIR = WORK_DIR / "downloads"
 # ── Постоянное хранилище на Google Drive ─────────────────────────────────────
 PERSISTENT_DIR = Path("/content/drive/MyDrive/MegaImporter_State")
 STATE_FILE     = PERSISTENT_DIR / "state.json"
+PROXIES_FILE   = PERSISTENT_DIR / "proxies.json"
 
 # ── Параметры загрузки ────────────────────────────────────────────────────────
 RESERVE_BYTES = 5   * 1024 ** 3   # 5 GB — резерв свободного места на Drive

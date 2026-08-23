@@ -13,6 +13,7 @@ from flask import Flask, jsonify, request, send_file
 from .drive import drive_about, validate_drive_folder, get_drive
 from .helpers import add_log
 from .mega import validate_mega_url
+from .proxy import proxy_manager
 from .state import (
     STATE, clear_finished_tasks, create_task, get_tasks,
     load_tasks_from_disk, lock, stop_event,
@@ -36,7 +37,7 @@ def index():
     return send_file(_UI_FILE)
 
 
-# ── API ───────────────────────────────────────────────────────────────────────
+# ── API: Задачи и Google Drive ────────────────────────────────────────────────
 
 @app.get("/api/folders")
 def api_folders():
@@ -57,7 +58,7 @@ def api_folders():
 
 @app.get("/api/status")
 def api_status():
-    """Полный снимок состояния: STATE + список задач + квота Drive."""
+    """Полный снимок состояния: STATE + список задач + квота Drive + прокси."""
     try:
         quota = drive_about()
     except Exception as e:
@@ -65,7 +66,8 @@ def api_status():
     with lock:
         state = dict(STATE)
         tasks = get_tasks()
-    return jsonify({"state": state, "tasks": tasks, "quota": quota})
+    proxy_state = proxy_manager.get_state()
+    return jsonify({"state": state, "tasks": tasks, "quota": quota, "proxies": proxy_state})
 
 
 @app.post("/api/tasks")
@@ -120,6 +122,77 @@ def api_clear_done():
     return jsonify({"message": "Удалено."})
 
 
+# ── API: Прокси ───────────────────────────────────────────────────────────────
+
+@app.get("/api/proxies")
+def api_proxies_get():
+    """Получить список прокси и статус ротации."""
+    return jsonify(proxy_manager.get_state())
+
+
+@app.post("/api/proxies/add")
+def api_proxies_add():
+    """Добавить прокси из текстового списка."""
+    data = request.get_json(force=True) or {}
+    text = data.get("text", "")
+    added = proxy_manager.add_proxies_text(text)
+    return jsonify({"message": f"Добавлено: {len(added)}", "added_count": len(added)})
+
+
+@app.post("/api/proxies/check")
+def api_proxies_check():
+    """Запустить параллельную проверку всех прокси."""
+    threading.Thread(target=proxy_manager.check_all, daemon=True).start()
+    return jsonify({"message": "Проверка запущена в фоне..."})
+
+
+@app.post("/api/proxies/delete")
+def api_proxies_delete():
+    """Удалить конкретный прокси."""
+    data = request.get_json(force=True) or {}
+    pid = data.get("id")
+    if pid:
+        proxy_manager.remove_proxy(pid)
+        return jsonify({"message": "Удалено"})
+    return jsonify({"error": "ID не указан"}), 400
+
+
+@app.post("/api/proxies/clear_dead")
+def api_proxies_clear_dead():
+    """Очистить все неработающие прокси."""
+    removed = proxy_manager.clear_dead()
+    return jsonify({"message": f"Удалено неработающих: {removed}"})
+
+
+@app.post("/api/proxies/toggle_auto")
+def api_proxies_toggle_auto():
+    """Включить/выключить авторотацию прокси при квоте."""
+    data = request.get_json(force=True) or {}
+    enabled = bool(data.get("enabled", True))
+    proxy_manager.auto_rotate = enabled
+    proxy_manager.save_to_disk()
+    return jsonify({"auto_rotate": proxy_manager.auto_rotate})
+
+
+@app.post("/api/proxies/use")
+def api_proxies_use():
+    """Вручную выбрать активный прокси или отключить (id=null)."""
+    data = request.get_json(force=True) or {}
+    pid = data.get("id")
+    if pid is None:
+        proxy_manager.disable_megacmd_proxy()
+        return jsonify({"message": "Используется прямое подключение"})
+
+    target_proxy = next((p for p in proxy_manager.proxies if p["id"] == pid), None)
+    if not target_proxy:
+        return jsonify({"error": "Прокси не найден"}), 404
+
+    ok = proxy_manager.apply_megacmd_proxy(target_proxy)
+    if ok:
+        return jsonify({"message": f"Подключено: {target_proxy['host']}:{target_proxy['port']}"})
+    return jsonify({"error": "Не удалось применить прокси"}), 400
+
+
 # ── Точка входа ───────────────────────────────────────────────────────────────
 
 def run(port: int | None = None) -> None:
@@ -143,8 +216,9 @@ def run(port: int | None = None) -> None:
     colab_drive.mount("/content/drive")
     auth.authenticate_user()
 
-    # Восстанавливаем очередь
+    # Восстанавливаем очередь и пул прокси
     load_tasks_from_disk()
+    proxy_manager.load_from_disk()
 
     # Запускаем Flask в фоне
     add_log("Запуск Flask-сервера...")

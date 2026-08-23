@@ -9,13 +9,19 @@
   --bg:#0b1020;--panel:#121a2e;--panel2:#18213a;
   --text:#eef3ff;--muted:#98a6c1;--border:#2b3858;
   --accent:#7c5cff;--cyan:#53c7ff;--green:#38d39f;
-  --yellow:#f3c85b;--red:#ff6d86
+  --yellow:#f3c85b;--red:#ff6d86;--card-bg:#0d1426;
 }
 *{box-sizing:border-box}
 body{margin:0;background:linear-gradient(180deg,#090e1b,#10182b);
      color:var(--text);font:14px Inter,system-ui,-apple-system,Segoe UI,sans-serif}
-.wrap{max-width:900px;margin:auto;padding:24px}
+.wrap{max-width:1240px;margin:auto;padding:24px}
 h1{margin:0 0 6px;font-size:26px}.sub{color:var(--muted);margin-bottom:20px}
+
+/* 2-колоночный макет: основная часть + сайдбар прокси */
+.layout-container{display:grid;grid-template-columns:1fr 340px;gap:18px;align-items:start}
+.main-column{display:flex;flex-direction:column;gap:16px}
+.sidebar-column{display:flex;flex-direction:column;gap:16px}
+
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
 .panel{background:rgba(18,26,46,.94);border:1px solid var(--border);
        border-radius:12px;padding:16px;box-shadow:0 8px 24px rgba(0,0,0,.15); position:relative;}
@@ -24,12 +30,15 @@ h1{margin:0 0 6px;font-size:26px}.sub{color:var(--muted);margin-bottom:20px}
 .bar>div{height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--cyan));
          transition:width .3s}
 input,textarea{width:100%;padding:12px;border-radius:8px;border:1px solid var(--border);
-               background:#0d1426;color:var(--text);outline:none;font-family:monospace;}
+               background:var(--card-bg);color:var(--text);outline:none;font-family:monospace;}
 textarea{min-height:90px;resize:vertical}
 button{padding:10px 16px;border:0;border-radius:8px;background:var(--accent);
-       color:#fff;font-weight:600;cursor:pointer;transition:opacity 0.2s;}
-button:hover{opacity:0.9}
+       color:#fff;font-weight:600;cursor:pointer;transition:all 0.2s;}
+button:hover{opacity:0.9;transform:translateY(-1px)}
 button.secondary{background:#2b3858}button.danger{background:#9f3148}
+button.success{background:#1f7a55}
+button:disabled{opacity:0.5;cursor:not-allowed;transform:none}
+.btn-sm{padding:6px 10px;font-size:12px;border-radius:6px}
 .row{display:flex;gap:10px;align-items:center}.row>*{flex:1}
 table{width:100%;border-collapse:collapse;margin-top:10px}
 th,td{padding:10px 8px;border-bottom:1px solid var(--border);text-align:left}
@@ -55,29 +64,55 @@ pre#logs {
     font-size: 12px;
 }
 
+/* Модальные окна */
 .modal-overlay{display:none;position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.75);z-index:999;backdrop-filter:blur(3px);}
-.modal-content{background:var(--panel);width:90%;max-width:500px;margin:50px auto;border:1px solid var(--border);border-radius:12px;padding:20px;}
+.modal-content{background:var(--panel);width:90%;max-width:520px;margin:40px auto;border:1px solid var(--border);border-radius:12px;padding:20px;box-shadow:0 12px 36px rgba(0,0,0,.4);}
 .folder-item{padding:10px;border-bottom:1px solid var(--border);cursor:pointer;display:flex;align-items:center;gap:10px;}
 .folder-item:hover{background:var(--border);}
 .folder-icon{font-size:16px;color:var(--yellow);}
 
-.radio-group{display:flex;flex-direction:column;gap:12px;margin:15px 0;background:#0d1426;padding:15px;border-radius:8px;border:1px solid var(--border);}
+.radio-group{display:flex;flex-direction:column;gap:12px;margin:15px 0;background:var(--card-bg);padding:15px;border-radius:8px;border:1px solid var(--border);}
 .radio-group label{display:flex;align-items:flex-start;gap:10px;cursor:pointer;line-height:1.4;}
 .radio-group input[type="radio"], .checkbox-group input[type="checkbox"] {margin-top:2px; flex-shrink: 0; width: 16px; height: 16px;}
 .checkbox-group label{display:flex;align-items:flex-start;gap:10px;cursor:pointer;line-height:1.4;}
 
-@media(max-width:600px){.grid{grid-template-columns:1fr}.wrap{padding:14px}.row{flex-direction:column;align-items:stretch}}
+/* Стили Сайдбара Прокси */
+.proxy-active-card{background:var(--card-bg);border:1px solid var(--border);border-radius:8px;padding:12px;margin-bottom:12px;}
+.proxy-list{display:flex;flex-direction:column;gap:8px;max-height:360px;overflow-y:auto;padding-right:4px;}
+.proxy-item{background:#090f1d;border:1px solid var(--border);border-radius:8px;padding:10px;display:flex;align-items:center;justify-content:space-between;gap:8px;transition:border-color 0.2s;}
+.proxy-item.active{border-color:var(--accent);background:rgba(124,92,255,0.08);}
+.proxy-badge{font-size:10px;font-weight:700;padding:2px 6px;border-radius:4px;text-transform:uppercase;}
+.badge-http{background:#2a3b61;color:#8ab4f8;}
+.badge-socks5{background:#3b2a61;color:#c58af8;}
+.badge-socks4{background:#2a5061;color:#8af4f8;}
+.status-dot{width:8px;height:8px;border-radius:50%;display:inline-block;flex-shrink:0;}
+.dot-online{background:var(--green);box-shadow:0 0 6px var(--green);}
+.dot-offline{background:var(--red);}
+.dot-checking{background:var(--yellow);animation:pulse 1s infinite;}
+.dot-quota{background:var(--yellow);}
+.proxy-info{display:flex;flex-direction:column;gap:3px;overflow:hidden;flex:1;}
+.proxy-host{font-family:monospace;font-size:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.proxy-meta{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);}
+.switch-container{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:var(--card-bg);border-radius:8px;border:1px solid var(--border);margin-bottom:12px;}
+
+@media(max-width:960px){
+  .layout-container{grid-template-columns:1fr}
+  .wrap{padding:14px}
+  .grid{grid-template-columns:1fr}
+  .row{flex-direction:column;align-items:stretch}
+}
 </style>
 </head>
 <body>
 
+<!-- Модальное окно выбора папки Google Drive -->
 <div id="folderModal" class="modal-overlay">
   <div class="modal-content">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;">
       <h3 style="margin:0">Выбор папки в Google Drive</h3>
-      <button class="secondary" onclick="$('folderModal').style.display='none'" style="padding:4px 10px">✕</button>
+      <button class="secondary btn-sm" onclick="$('folderModal').style.display='none'">✕</button>
     </div>
-    <div style="margin-bottom:10px; padding:10px; background:#0d1426; border-radius:6px; border:1px solid var(--border);">
+    <div style="margin-bottom:10px; padding:10px; background:var(--card-bg); border-radius:6px; border:1px solid var(--border);">
       <span class="muted small">Текущая папка:</span> <b id="currentFolderName">Мой диск</b>
     </div>
     <div id="folderList" style="max-height:300px; overflow-y:auto; border:1px solid var(--border); border-radius:6px; margin-bottom:15px; background:#090f1d;"></div>
@@ -88,11 +123,12 @@ pre#logs {
   </div>
 </div>
 
+<!-- Модальное окно архивации -->
 <div id="archiveModal" class="modal-overlay">
   <div class="modal-content">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;">
       <h3 id="archiveModalTitle" style="margin:0">Настройка ссылки</h3>
-      <button class="secondary" onclick="cancelArchive()" style="padding:4px 10px">✕</button>
+      <button class="secondary btn-sm" onclick="cancelArchive()">✕</button>
     </div>
     <div class="muted small" style="margin-bottom:5px">Ссылка:</div>
     <div id="archiveModalUrl" style="word-break:break-all; background:#090f1d; padding:10px; border:1px solid var(--border); border-radius:6px; font-family:monospace;" class="small"></div>
@@ -117,53 +153,133 @@ pre#logs {
   </div>
 </div>
 
+<!-- Модальное окно добавления Прокси -->
+<div id="proxyModal" class="modal-overlay">
+  <div class="modal-content">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:15px;">
+      <h3 style="margin:0">Добавление прокси</h3>
+      <button class="secondary btn-sm" onclick="$('proxyModal').style.display='none'">✕</button>
+    </div>
+    <div class="small muted" style="margin-bottom:8px;">
+      Вставьте список прокси (по одному на строку). Протокол и работоспособность определятся автоматически.
+    </div>
+    <textarea id="proxyInput" placeholder="Форматы:
+1.2.3.4:8080
+1.2.3.4:8080:user:pass
+socks5://user:pass@1.2.3.4:1080
+http://1.2.3.4:3128" style="min-height:140px; font-size:12px;"></textarea>
+
+    <div style="margin-top:14px; display:flex; gap:10px; justify-content:flex-end;">
+      <button class="secondary" onclick="$('proxyModal').style.display='none'">Отмена</button>
+      <button onclick="submitAddProxies()">➕ Проверить и добавить</button>
+    </div>
+  </div>
+</div>
+
 <div class="wrap">
   <h1>MEGA → Google Drive</h1>
-  <div class="sub">Загрузка файлов напрямую без использования вашего трафика.</div>
+  <div class="sub">Загрузка файлов напрямую в облако без использования локального трафика.</div>
 
-  <div class="grid" style="margin-bottom:16px">
-    <div class="panel">
-      <div class="muted small">КВОТА GOOGLE DRIVE</div>
-      <b id="driveText">Загрузка...</b>
-      <div class="bar"><div id="usageBar"></div></div>
-    </div>
-    <div class="panel">
-      <div class="muted small">ТЕКУЩИЙ СТАТУС</div>
-      <b id="msgTop" class="pulsing" style="color:var(--cyan); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">Готово к работе</b>
-      <div id="currentFile" class="small muted" style="margin-top:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">Нет активных задач</div>
-    </div>
-  </div>
+  <div class="layout-container">
+    
+    <!-- Левая колонка (Основной дашборд) -->
+    <div class="main-column">
+      
+      <!-- Метрики квоты и текущего статуса -->
+      <div class="grid">
+        <div class="panel">
+          <div class="muted small">КВОТА GOOGLE DRIVE</div>
+          <b id="driveText">Загрузка...</b>
+          <div class="bar"><div id="usageBar"></div></div>
+        </div>
+        <div class="panel">
+          <div class="muted small">ТЕКУЩИЙ СТАТУС</div>
+          <b id="msgTop" class="pulsing" style="color:var(--cyan); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">Готово к работе</b>
+          <div id="currentFile" class="small muted" style="margin-top:4px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">Нет активных задач</div>
+        </div>
+      </div>
 
-  <div class="panel" style="margin-bottom:16px">
-    <div style="display:flex; gap:10px; margin-bottom:12px;">
-      <input id="destination" placeholder="ID папки или root" value="root" style="flex:1">
-      <button class="secondary" onclick="openFolderModal()">📁 Выбрать папку</button>
-    </div>
-    <textarea id="urls" placeholder="Вставьте ссылки MEGA (по одной на строку)..."></textarea>
-    <div class="row" style="margin-top:12px">
-      <button onclick="startAddFlow()">➕ Добавить в очередь</button>
-      <button class="secondary" onclick="startQueue()">▶ Запустить</button>
-      <button class="danger" onclick="stopQueue()">⏹ Остановить</button>
-    </div>
-    <div id="result" class="small muted" style="margin-top:8px; text-align:center;"></div>
-  </div>
+      <!-- Панель добавления ссылок -->
+      <div class="panel">
+        <div style="display:flex; gap:10px; margin-bottom:12px;">
+          <input id="destination" placeholder="ID папки или root" value="root" style="flex:1">
+          <button class="secondary" onclick="openFolderModal()">📁 Выбрать папку</button>
+        </div>
+        <textarea id="urls" placeholder="Вставьте ссылки MEGA (по одной на строку)..."></textarea>
+        <div class="row" style="margin-top:12px">
+          <button onclick="startAddFlow()">➕ Добавить в очередь</button>
+          <button class="secondary" onclick="startQueue()">▶ Запустить</button>
+          <button class="danger" onclick="stopQueue()">⏹ Остановить</button>
+        </div>
+        <div id="result" class="small muted" style="margin-top:8px; text-align:center;"></div>
+      </div>
 
-  <div class="panel">
-    <div style="display:flex; justify-content:space-between; align-items:center;">
-      <h3 style="margin:0">Очередь загрузки</h3>
-      <button class="secondary small" style="padding:6px 10px;" onclick="clearDone()">Очистить завершённые</button>
-    </div>
-    <div style="overflow-x:auto;">
-      <table>
-        <thead><tr><th>Имя / Ссылка</th><th>Статус</th><th>Прогресс</th><th>Размер</th></tr></thead>
-        <tbody id="tasks"></tbody>
-      </table>
-    </div>
-  </div>
+      <!-- Очередь загрузки -->
+      <div class="panel">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <h3 style="margin:0">Очередь загрузки</h3>
+          <button class="secondary btn-sm" onclick="clearDone()">Очистить завершённые</button>
+        </div>
+        <div style="overflow-x:auto;">
+          <table>
+            <thead><tr><th>Имя / Ссылка</th><th>Статус</th><th>Прогресс</th><th>Размер</th></tr></thead>
+            <tbody id="tasks"></tbody>
+          </table>
+        </div>
+      </div>
 
-  <div class="panel" style="margin-top:16px;">
-    <h3 style="margin-top:0">Логи (для отладки)</h3>
-    <pre id="logs">Загрузка…</pre>
+      <!-- Логи -->
+      <div class="panel">
+        <h3 style="margin-top:0">Логи (для отладки)</h3>
+        <pre id="logs">Загрузка…</pre>
+      </div>
+
+    </div>
+
+    <!-- Правая колонка (Менеджер Прокси) -->
+    <div class="sidebar-column">
+      <div class="panel">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+          <h3 style="margin:0; font-size:16px;">🌐 Прокси MEGA</h3>
+          <button class="btn-sm" onclick="$('proxyModal').style.display='block'">➕ Добавить</button>
+        </div>
+
+        <!-- Карточка активного подключения -->
+        <div class="proxy-active-card">
+          <div class="muted small" style="margin-bottom:4px;">АКТИВНОЕ СОЕДИНЕНИЕ:</div>
+          <div id="activeProxyLabel" style="font-weight:600; font-size:13px; color:var(--green); display:flex; align-items:center; gap:6px;">
+            <span class="status-dot dot-online"></span> Прямое (Без прокси)
+          </div>
+        </div>
+
+        <!-- Переключатель авторотации -->
+        <div class="switch-container">
+          <span class="small" style="font-weight:600;">Ротация при квоте:</span>
+          <label style="display:flex; align-items:center; cursor:pointer; gap:6px; margin:0;">
+            <input type="checkbox" id="autoRotateToggle" onchange="toggleAutoRotate(this.checked)" checked style="width:16px; height:16px; margin:0;">
+            <span class="small muted" id="autoRotateLabel">Вкл</span>
+          </label>
+        </div>
+
+        <!-- Кнопки управления пулом -->
+        <div style="display:flex; gap:8px; margin-bottom:12px;">
+          <button class="secondary btn-sm" style="flex:1" onclick="checkAllProxies()">🔄 Проверить все</button>
+          <button class="secondary btn-sm" style="flex:1" onclick="clearDeadProxies()">🗑️ Очистить мёртвые</button>
+        </div>
+
+        <!-- Список прокси -->
+        <div class="muted small" style="margin-bottom:6px; display:flex; justify-content:space-between;">
+          <span>ПУЛ ПРОКСИ:</span>
+          <span id="proxyCountStats">0 / 0 онлайн</span>
+        </div>
+
+        <div id="proxyList" class="proxy-list">
+          <div class="muted small" style="text-align:center; padding:20px;">Пул прокси пуст</div>
+        </div>
+
+      </div>
+    </div>
+
   </div>
 </div>
 
@@ -185,6 +301,7 @@ async function api(url,opt={}){
   return r.json()
 }
 
+// ── Google Drive Папки ────────────────────────────────────────────────────────
 let folderStack = [{id: 'root', name: 'Мой диск'}];
 
 async function openFolderModal() {
@@ -219,6 +336,7 @@ async function enterFolder(id, name) { folderStack.push({id, name}); await loadF
 async function goUpFolder() { if (folderStack.length > 1) { folderStack.pop(); await loadFolders(folderStack[folderStack.length - 1].id); } }
 function selectCurrentFolder() { $("destination").value = folderStack[folderStack.length - 1].id; $("folderModal").style.display='none'; }
 
+// ── Пошаговое добавление задач с настройкой архивации ─────────────────────────
 let pendingUrls = [];
 let currentTasksPayload = [];
 
@@ -283,6 +401,126 @@ async function sendTasksToBackend(tasksData) {
   refresh();
 }
 
+// ── Управление Прокси ────────────────────────────────────────────────────────
+
+async function submitAddProxies() {
+  const text = $("proxyInput").value.trim();
+  if(!text) return;
+  $("proxyModal").style.display = "none";
+  $("proxyInput").value = "";
+  await api("/api/proxies/add", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({text})
+  });
+  refresh();
+}
+
+async function checkAllProxies() {
+  await api("/api/proxies/check", {method: "POST"});
+  refresh();
+}
+
+async function clearDeadProxies() {
+  await api("/api/proxies/clear_dead", {method: "POST"});
+  refresh();
+}
+
+async function deleteProxy(id, event) {
+  if(event) event.stopPropagation();
+  await api("/api/proxies/delete", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({id})
+  });
+  refresh();
+}
+
+async function useProxy(id) {
+  await api("/api/proxies/use", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({id})
+  });
+  refresh();
+}
+
+async function toggleAutoRotate(enabled) {
+  $("autoRotateLabel").textContent = enabled ? "Вкл" : "Выкл";
+  await api("/api/proxies/toggle_auto", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({enabled})
+  });
+}
+
+function renderProxies(pxState) {
+  if(!pxState) return;
+  
+  // Переключатель авторотации
+  $("autoRotateToggle").checked = Boolean(pxState.auto_rotate);
+  $("autoRotateLabel").textContent = pxState.auto_rotate ? "Вкл" : "Выкл";
+
+  // Статистика
+  $("proxyCountStats").textContent = `${pxState.count_online || 0} / ${pxState.count_total || 0} онлайн`;
+
+  // Активный прокси
+  const activeId = pxState.active_proxy_id;
+  const activeProxy = (pxState.proxies || []).find(p => p.id === activeId);
+
+  if(activeProxy) {
+    $("activeProxyLabel").innerHTML = `
+      <span class="status-dot dot-online"></span> 
+      <span>${esc(activeProxy.host)}:${esc(activeProxy.port)}</span>
+      <span class="proxy-badge badge-${esc(activeProxy.protocol||'http')}">${esc(activeProxy.protocol||'HTTP')}</span>
+      <button class="secondary btn-sm" style="padding:2px 6px; margin-left:auto;" onclick="useProxy(null)">Сброс</button>
+    `;
+  } else {
+    $("activeProxyLabel").innerHTML = `<span class="status-dot dot-online"></span> Прямое (Без прокси)`;
+  }
+
+  // Список прокси
+  const list = pxState.proxies || [];
+  if(list.length === 0) {
+    $("proxyList").innerHTML = `<div class="muted small" style="text-align:center; padding:20px;">Пул прокси пуст.<br>Нажмите <b>Добавить</b> выше.</div>`;
+    return;
+  }
+
+  $("proxyList").innerHTML = list.map(p => {
+    let dotClass = "dot-offline";
+    let statusText = p.error || "Недоступен";
+    if(p.status === "online") {
+      dotClass = "dot-online";
+      statusText = p.ping ? `${p.ping} ms` : "Онлайн";
+    } else if(p.status === "checking") {
+      dotClass = "dot-checking";
+      statusText = "Проверка...";
+    } else if(p.status === "quota_exceeded") {
+      dotClass = "dot-quota";
+      statusText = "Квота исчерпана";
+    }
+
+    const isActive = p.id === activeId;
+    const protoClass = `badge-${p.protocol === 'socks5' ? 'socks5' : p.protocol === 'socks4' ? 'socks4' : 'http'}`;
+
+    return `
+      <div class="proxy-item ${isActive ? 'active' : ''}" onclick="useProxy('${p.id}')" title="Кликните для переключения">
+        <span class="status-dot ${dotClass}" title="${esc(statusText)}"></span>
+        <div class="proxy-info">
+          <div class="proxy-host">${esc(p.host)}:${esc(p.port)}</div>
+          <div class="proxy-meta">
+            <span class="proxy-badge ${protoClass}">${esc((p.protocol || 'HTTP').toUpperCase())}</span>
+            <span>${esc(statusText)}</span>
+          </div>
+        </div>
+        <button class="secondary btn-sm" style="padding:2px 8px; font-size:11px;" onclick="deleteProxy('${p.id}', event)">✕</button>
+      </div>
+    `;
+  }).join("");
+}
+
+// ── Периодическое обновление ─────────────────────────────────────────────────
+
 async function refresh(){
   try{
     const s=await api("/api/status");
@@ -304,7 +542,7 @@ async function refresh(){
       }
       return `
       <tr>
-        <td class="small" style="max-width:250px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${esc(t.name||t.url)}">
+        <td class="small" style="max-width:220px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${esc(t.name||t.url)}">
           ${t.zip_mode !== 'none' ? '📦 ' : ''}${esc(t.name||t.url)}
         </td>
         <td class="${esc(t.status)}">${esc(t.status)}</td>
@@ -312,6 +550,8 @@ async function refresh(){
         <td>${fmt(t.bytes_total||0)}</td>
       </tr>`;
     }).join("");
+
+    renderProxies(s.proxies);
   }catch(e){}
 }
 

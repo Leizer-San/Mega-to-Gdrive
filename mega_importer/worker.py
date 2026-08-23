@@ -2,15 +2,17 @@
 worker.py — Обработчик задач и управление очередью.
 
 process_task() выполняет полный цикл: скачать из MEGA → упаковать → залить на Drive.
-worker() — основной цикл, который запускается в фоновом потоке.
+При исчерпании квоты или зависании автоматически переключает прокси и продолжает скачивание.
 """
 import shutil
+import time
 import traceback
 
 from .config import DOWNLOAD_DIR, MAX_RETRIES, RESERVE_BYTES
 from .drive import drive_about, ensure_drive_folder, upload_file
 from .helpers import add_log, format_bytes, update_state
 from .mega import all_files, apply_zip_mode, build_drive_tree, local_tree_stats, mega_get
+from .proxy import proxy_manager
 from .state import (
     STATE, get_next_task, lock, stop_event, update_task,
 )
@@ -19,7 +21,7 @@ from .state import (
 def process_task(task: dict) -> None:
     """
     Выполнить одну задачу импорта:
-      1. Скачать из MEGA в локальную временную папку
+      1. Скачать из MEGA в локальную временную папку (с поддержкой авторотации прокси)
       2. Применить zip_mode (если нужно)
       3. Проверить квоту Drive
       4. Зеркалировать структуру папок в Drive
@@ -31,8 +33,6 @@ def process_task(task: dict) -> None:
     zip_mode     = task.get("zip_mode", "none")
     task_dir     = DOWNLOAD_DIR / tid
 
-    if task_dir.exists():
-        shutil.rmtree(task_dir, ignore_errors=True)
     task_dir.mkdir(parents=True, exist_ok=True)
 
     try:
@@ -45,8 +45,31 @@ def process_task(task: dict) -> None:
             error=None,
         )
 
-        # ── 1. Скачиваем из MEGA ─────────────────────────────────────────────
-        mega_get(url, task_dir)
+        # ── 1. Скачиваем из MEGA (с авторотацией прокси при квоте) ────────────
+        while True:
+            if stop_event.is_set():
+                raise RuntimeError("Остановлено пользователем")
+
+            try:
+                mega_get(url, task_dir)
+                break  # скачивание успешно завершено
+            except Exception as download_err:
+                err_msg = str(download_err)
+                is_quota = any(
+                    kw in err_msg.lower()
+                    for kw in ["квота", "quota", "bandwidth", "зависло", "нет прогресса", "limit"]
+                )
+
+                if is_quota and proxy_manager.auto_rotate:
+                    add_log("⚠️ Обнаружена квота или замирание потока. Пробую сменить прокси...", "WARNING")
+                    rotated = proxy_manager.rotate_on_quota()
+                    if rotated:
+                        add_log("🔄 Прокси переключен. Возобновляю скачивание с места остановки...", "OK")
+                        time.sleep(2)
+                        continue  # Повторяем mega_get без очистки task_dir!
+
+                # Если не квота или прокси закончились — пробрасываем ошибку дальше
+                raise download_err
 
         # ── 2. ZIP-упаковка ──────────────────────────────────────────────────
         apply_zip_mode(task_dir, zip_mode)
