@@ -5,6 +5,7 @@ proxy.py — Менеджер пула прокси для MEGA.
   - Парсинг различных форматов (ip:port, ip:port:user:pass, protocol://user:pass@ip:port)
   - Автоопределение протокола (HTTP, SOCKS5, SOCKS4) и проверка доступности с замером пинга
   - Управление настройками mega-proxy (применение, сброс, ротация)
+  - Сброс заблокированных локальных сессий MEGAcmd (~/.megaCmd/session)
   - Автоматическое сохранение/загрузка списка с Google Drive
 """
 from __future__ import annotations
@@ -24,6 +25,37 @@ from typing import Any
 
 from .config import PROXIES_FILE
 from .helpers import add_log
+
+
+# ── Сброс анонимной сессии MEGAcmd ───────────────────────────────────────────
+
+def reset_megacmd_session() -> None:
+    """
+    Сбросить локальную анонимную сессию MEGAcmd.
+    MEGAcmd сохраняет session ID в ~/.megaCmd/session. Если на этом session ID
+    сработал лимит квоты, MEGA сервер будет отдавать 'Access denied' на всех прокси,
+    пока файл сессии не будет очищен.
+    """
+    try:
+        subprocess.run(["mega-quit"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+    except Exception:
+        pass
+
+    mega_dirs = [
+        Path.home() / ".megaCmd",
+        Path("/root/.megaCmd"),
+        Path("/content/.megaCmd"),
+    ]
+    for d in mega_dirs:
+        if d.exists():
+            for fname in ["session", "megacmd.lock"]:
+                f = d / fname
+                if f.exists():
+                    try:
+                        f.unlink()
+                    except Exception:
+                        pass
+    time.sleep(0.5)
 
 
 # ── Парсинг строк прокси ──────────────────────────────────────────────────────
@@ -292,7 +324,9 @@ class ProxyManager:
     # ── Управление MEGAcmd Proxy ──────────────────────────────────────────────
 
     def apply_megacmd_proxy(self, proxy: dict) -> bool:
-        """Применить прокси в MEGAcmd через mega-proxy."""
+        """Применить прокси в MEGAcmd через mega-proxy со сбросом старой сессии квоты."""
+        reset_megacmd_session()
+
         url = format_proxy_url(proxy)
         cmd = ["mega-proxy", url]
         if proxy.get("username"):
@@ -312,7 +346,8 @@ class ProxyManager:
             return False
 
     def disable_megacmd_proxy(self) -> None:
-        """Отключить прокси в MEGAcmd (прямое соединение)."""
+        """Отключить прокси в MEGAcmd (прямое соединение) со сбросом сессии."""
+        reset_megacmd_session()
         subprocess.run(["mega-proxy", "--none"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         with self._lock:
             self.active_proxy_id = None

@@ -70,7 +70,7 @@ def mega_get(url: str, target_dir: Path) -> None:
     target_dir = Path(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    cmd = ["mega-get", url, str(target_dir)]
+    cmd = ["mega-get", "--ignore-quota-warn", url, str(target_dir)]
     add_log(f"MEGA: начинаю скачивание {url}")
 
     process = subprocess.Popen(
