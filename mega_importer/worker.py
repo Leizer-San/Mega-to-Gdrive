@@ -2,7 +2,7 @@
 worker.py — Обработчик задач и управление очередью.
 
 process_task() выполняет полный цикл: скачать из MEGA → упаковать → залить на Drive.
-При исчерпании квоты или зависании автоматически переключает прокси и продолжает скачивание.
+При исчерпании квоты или сбоях прокси автоматически переключает прокси и продолжает скачивание.
 """
 import shutil
 import time
@@ -61,13 +61,16 @@ def process_task(task: dict) -> None:
                     kw in err_lower
                     for kw in ["квота", "quota", "bandwidth", "зависло", "нет прогресса", "limit"]
                 )
-                is_proxy_failure = any(
-                    kw in err_lower
-                    for kw in [
-                        "access denied", "failed to get account", "failed to connect",
-                        "connection refused", "network error", "proxy", "код 11",
-                        "код 9", "could not connect", "timed out"
-                    ]
+                is_proxy_failure = (
+                    proxy_manager.active_proxy_id is not None
+                    or any(
+                        kw in err_lower
+                        for kw in [
+                            "access denied", "failed to get account", "failed to connect",
+                            "connection refused", "network error", "proxy", "код 11",
+                            "код 9", "could not connect", "timed out", "timeout"
+                        ]
+                    )
                 )
 
                 if (is_quota or is_proxy_failure) and proxy_manager.auto_rotate:
@@ -80,6 +83,13 @@ def process_task(task: dict) -> None:
                         add_log("🔄 Прокси переключен. Возобновляю скачивание с места остановки...", "OK")
                         time.sleep(2)
                         continue  # Повторяем mega_get без очистки task_dir!
+                    else:
+                        # Если рабочих прокси больше нет — пробуем прямое подключение
+                        if proxy_manager.active_proxy_id:
+                            add_log("⚠️ Прокси отключен. Пробую прямое подключение...", "WARNING")
+                            proxy_manager.disable_megacmd_proxy()
+                            time.sleep(2)
+                            continue
 
                 # Если не квота или прокси закончились — пробрасываем ошибку дальше
                 raise download_err

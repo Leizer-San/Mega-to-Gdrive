@@ -559,14 +559,35 @@ async function refresh(){
   }catch(e){}
 }
 
-async function startQueue(){ await api("/api/start",{method:"POST"}); refresh(); }
-async function stopQueue(){ await api("/api/stop",{method:"POST"}); refresh(); }
+async function startQueue(){ 
+  const r = await api("/api/start",{method:"POST"}); 
+  $("result").textContent = r.message || "Очередь запущена";
+  setTimeout(()=>$("result").textContent="", 4000);
+  refresh(); 
+}
+async function stopQueue(){ 
+  const r = await api("/api/stop",{method:"POST"}); 
+  $("result").textContent = r.message || "Остановка...";
+  setTimeout(()=>$("result").textContent="", 4000);
+  refresh(); 
+}
 async function clearDone(){ await api("/api/clear_done",{method:"POST"}); refresh(); }
-async function restartErrors(){ await api("/api/restart_errors",{method:"POST"}); refresh(); }
-async function clearAll(){ if(confirm("Очистить всю очередь задач?")){ await api("/api/clear_all",{method:"POST"}); refresh(); } }
+async function restartErrors(){ 
+  const r = await api("/api/restart_errors",{method:"POST"}); 
+  $("result").textContent = r.message || "Очередь перезапущена";
+  setTimeout(()=>$("result").textContent="", 4000);
+  refresh(); 
+}
+async function clearAll(){ 
+  if(confirm("Очистить всю очередь задач?")){ 
+    await api("/api/clear_all",{method:"POST"}); 
+    refresh(); 
+  } 
+}
 
 setInterval(refresh,2000); refresh();
 </script>
 </body>
 </html>
+
 

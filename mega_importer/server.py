@@ -15,8 +15,8 @@ from .helpers import add_log
 from .mega import validate_mega_url
 from .proxy import proxy_manager
 from .state import (
-    STATE, clear_finished_tasks, create_task, get_tasks,
-    load_tasks_from_disk, lock, stop_event,
+    STATE, clear_finished_tasks, clear_all_tasks, create_task, get_tasks,
+    load_tasks_from_disk, lock, restart_errored_tasks, stop_event,
 )
 from .worker import worker
 
@@ -95,33 +95,32 @@ def api_tasks():
         return jsonify({"message": str(e)}), 400
 
 
-from .state import (
-    STATE, clear_finished_tasks, clear_all_tasks, create_task, get_tasks,
-    load_tasks_from_disk, lock, restart_errored_tasks, stop_event,
-)
-
-
 @app.post("/api/start")
 def api_start():
     """Запустить обработку очереди. Автоматически переводит задачи с ошибками в queued."""
     global _worker_thread
     with lock:
         restarted = restart_errored_tasks()
-        if _worker_thread and _worker_thread.is_alive():
-            msg = f"Очередь работает. Перезапущено задач с ошибкой: {restarted}" if restarted else "Очередь уже запущена."
-            return jsonify({"message": msg})
         stop_event.clear()
-        _worker_thread = threading.Thread(target=worker, daemon=True)
-        _worker_thread.start()
+        if not (_worker_thread and _worker_thread.is_alive()):
+            _worker_thread = threading.Thread(target=worker, daemon=True)
+            _worker_thread.start()
     msg = f"Очередь запущена (возобновлено задач: {restarted})" if restarted else "Очередь запущена."
     return jsonify({"message": msg})
 
 
 @app.post("/api/restart_errors")
 def api_restart_errors():
-    """Сбросить статус всех задач с ошибкой на queued."""
-    restarted = restart_errored_tasks()
-    return jsonify({"message": f"Возобновлено задач с ошибкой: {restarted}"})
+    """Сбросить статус всех задач с ошибкой на queued и гарантированно запустить воркер."""
+    global _worker_thread
+    with lock:
+        restarted = restart_errored_tasks()
+        stop_event.clear()
+        if not (_worker_thread and _worker_thread.is_alive()):
+            _worker_thread = threading.Thread(target=worker, daemon=True)
+            _worker_thread.start()
+    msg = f"Возобновлено задач: {restarted}. Очередь запущена." if restarted else "Очередь запущена."
+    return jsonify({"message": msg})
 
 
 @app.post("/api/stop")
@@ -143,7 +142,6 @@ def api_clear_all():
     """Очистить всю очередь."""
     clear_all_tasks()
     return jsonify({"message": "Очередь очищена."})
-
 
 
 # ── API: Прокси ───────────────────────────────────────────────────────────────
