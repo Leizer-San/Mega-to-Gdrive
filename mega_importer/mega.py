@@ -28,10 +28,12 @@ def validate_mega_url(url: str) -> bool:
 # Точные фразы ошибки квоты MEGAcmd (не одиночные слова во избежание ложных срабатываний)
 _QUOTA_PATTERNS = [
     re.compile(r"bandwidth\s+limit\s*(reached|exceeded)", re.I),
+    re.compile(r"reached\s+(your\s+)?bandwidth\s+quota", re.I),
     re.compile(r"(transfer|download)\s+quota\s*(reached|exceeded)", re.I),
     re.compile(r"quota\s+exceeded", re.I),
     re.compile(r"transfer\s+limit\s+exceeded", re.I),
     re.compile(r"download\s+limit\s*(reached|exceeded)", re.I),
+    re.compile(r"try\s+again\s+in\s+\d+\s*(minutes?|hours?)", re.I),
     re.compile(r"\b(eoverquota|overquota)\b", re.I),
     re.compile(r"over\s+quota", re.I),
     re.compile(r"error:\s*509\b", re.I),
@@ -41,6 +43,15 @@ _QUOTA_PATTERNS = [
 def _is_quota_line(text: str) -> bool:
     """Вернуть True, если строка содержит точный признак исчерпания квоты MEGA."""
     return any(p.search(text) for p in _QUOTA_PATTERNS)
+
+
+def _get_quota_wait_hint(text: str) -> str:
+    """Извлечь подсказку времени ожидания сброса квоты (если есть в выводе MEGA)."""
+    m = re.search(r"try\s+again\s+in\s+([\d]+\s*(?:minutes?|hours?|минут|часов)?)", text, re.I)
+    if m:
+        return f" (сброс квоты через ~{m.group(1).strip()})"
+    return ""
+
 
 
 def mega_get(url: str, target_dir: Path) -> None:
@@ -189,7 +200,9 @@ def mega_get(url: str, target_dir: Path) -> None:
     # Ошибки
     all_output = "\n".join(stderr_lines + stdout_lines)
     if _is_quota_line(all_output):
-        raise RuntimeError("⚠️ Исчерпана квота MEGA (требуется смена IP/сессии)")
+        wait_hint = _get_quota_wait_hint(all_output)
+        raise RuntimeError(f"⚠️ Исчерпана квота MEGA{wait_hint} (требуется смена IP/прокси)")
+
 
     if rc != 0:
         err_context = "\n".join(
