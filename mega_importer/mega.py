@@ -25,12 +25,39 @@ def validate_mega_url(url: str) -> bool:
 
 # ── Скачивание ────────────────────────────────────────────────────────────────
 
+# Расширенный список ключевых слов ошибки квоты MEGAcmd.
+# MEGAcmd использует разные варианты в зависимости от версии и платформы.
+_QUOTA_WORDS = {
+    "bandwidth",
+    "quota",
+    "exceeded",
+    "overquota",
+    "eoverquota",
+    "over quota",
+    "rate limit",
+    "rate-limit",
+    "509",
+    "too many",
+    "transfer limit",
+}
+
+
+def _is_quota_line(text: str) -> bool:
+    """Вернуть True, если строка содержит признак исчерпания квоты MEGA."""
+    t = text.lower()
+    return any(kw in t for kw in _QUOTA_WORDS)
+
+
 def mega_get(url: str, target_dir: Path) -> None:
     """
     Скачать файл/папку по MEGA-ссылке в target_dir с помощью mega-get.
 
-    - Парсит вывод процесса и обновляет STATE.message каждую секунду.
-    - Бросает RuntimeError при ошибке квоты или таймауте (нет прогресса >60 с).
+    Улучшения по сравнению с исходной версией:
+    - stderr читается отдельным потоком — сообщения об ошибках не теряются
+    - Расширенный список ключевых слов квоты (overquota, eoverquota, 509, ...)
+    - Таймаут 90 сек сбрасывается при любом непустом выводе, а не только прогрессе
+    - После завершения: проверка что файлы реально скачались (rc=0, но 0 файлов)
+    - Точные сообщения об ошибке в логах
     """
     target_dir = Path(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -41,52 +68,89 @@ def mega_get(url: str, target_dir: Path) -> None:
     process = subprocess.Popen(
         cmd,
         stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stderr=subprocess.PIPE,   # ← читаем stderr отдельно
         text=True,
         errors="replace",
         bufsize=1,
     )
 
-    lines: list[str] = []
+    # ── Читаем stderr в фоновом потоке ──────────────────────────────────────
+    import threading
+    stderr_lines: list[str] = []
+    stderr_quota_found = threading.Event()
+
+    def _read_stderr():
+        try:
+            for line in process.stderr:
+                line = line.rstrip()
+                if not line:
+                    continue
+                clean = re.sub(r"[\x00-\x1F\x7F-\x9F]", "", line)
+                stderr_lines.append(clean)
+                add_log(clean, "MEGA-ERR")
+                if _is_quota_line(clean):
+                    stderr_quota_found.set()
+        except Exception:
+            pass
+
+    stderr_thread = threading.Thread(target=_read_stderr, daemon=True)
+    stderr_thread.start()
+
+    # ── Основной цикл чтения stdout ──────────────────────────────────────────
+    stdout_lines: list[str] = []
     last_update_time    = time.time()
-    last_progress_change = time.time()
+    last_activity_time  = time.time()   # сбрасывается при любом выводе
     last_seen_progress  = ""
 
     while True:
+        # Проверяем stop_event
+        if stop_event.is_set():
+            process.kill()
+            process.wait()
+            raise RuntimeError("Остановлено пользователем")
+
+        # Квота обнаружена в stderr — немедленно прерываем
+        if stderr_quota_found.is_set():
+            process.kill()
+            process.wait()
+            raise RuntimeError("⚠️ Исчерпана квота MEGA (требуется смена IP/сессии)")
+
         retcode = process.poll()
         if retcode is not None:
             break
 
-        # Таймаут: если прогресс не меняется 60 с — вероятна квота MEGA
-        if time.time() - last_progress_change > 60:
+        # Таймаут: нет вывода > 90 секунд
+        if time.time() - last_activity_time > 90:
             process.kill()
+            process.wait()
             raise RuntimeError(
-                "⚠️ Превышена квота MEGA или зависло соединение "
-                "(нет ответа от сервера >60 сек)"
+                "⚠️ Нет активности от mega-get более 90 сек — "
+                "вероятно исчерпана квота или обрыв соединения"
             )
 
         line = process.stdout.readline()
         if not line:
-            time.sleep(0.1)
+            time.sleep(0.05)
             continue
 
         line = line.strip()
         if not line:
             continue
 
-        lines.append(line)
-        if len(lines) > 50:
-            lines.pop(0)
+        last_activity_time = time.time()   # любой вывод сбрасывает таймер
+        stdout_lines.append(line)
+        if len(stdout_lines) > 100:
+            stdout_lines.pop(0)
 
         line_upper = line.upper()
 
-        if any(
-            err_word in line_upper
-            for err_word in ["BANDWIDTH", "QUOTA", "EXCEEDED", "LIMIT"]
-        ):
+        # Квота в stdout (MEGAcmd иногда пишет сюда)
+        if _is_quota_line(line):
             process.kill()
+            process.wait()
             raise RuntimeError("⚠️ Исчерпана квота MEGA (требуется смена IP/сессии)")
 
+        # Прогресс-строки
         is_progress = any(
             x in line_upper
             for x in ["TRANSFERRING", "PROCEEDING", "%", "B/S", "DOWNLOADED"]
@@ -95,8 +159,7 @@ def mega_get(url: str, target_dir: Path) -> None:
         if is_progress:
             now = time.time()
             if line != last_seen_progress:
-                last_seen_progress   = line
-                last_progress_change = now  # сбрасываем таймер таймаута
+                last_seen_progress = line
 
             if now - last_update_time > 1.0:
                 match = re.search(r"\(([^)]+)\)", line)
@@ -112,11 +175,39 @@ def mega_get(url: str, target_dir: Path) -> None:
             add_log(clean_line, "MEGA")
 
     rc = process.wait()
+    stderr_thread.join(timeout=3)
+
+    # ── Анализ результата ─────────────────────────────────────────────────────
+
+    # 1. Квота в stderr (мог появиться после завершения процесса)
+    if stderr_quota_found.is_set() or _is_quota_line("\n".join(stderr_lines)):
+        raise RuntimeError("⚠️ Исчерпана квота MEGA (требуется смена IP/сессии)")
+
+    # 2. Квота в накопленном stdout
+    full_stdout = "\n".join(stdout_lines)
+    if _is_quota_line(full_stdout):
+        raise RuntimeError("⚠️ Исчерпана квота MEGA (требуется смена IP/сессии)")
+
+    # 3. Ненулевой exit code
     if rc != 0:
-        full_output = "\n".join(lines)
-        if "bandwidth" in full_output.lower() or "quota" in full_output.lower():
-            raise RuntimeError("⚠️ Исчерпана квота MEGA (требуется смена IP/сессии)")
-        raise RuntimeError("mega-get завершился с ошибкой:\n" + full_output)
+        # Собираем контекст ошибки из обоих потоков
+        err_context = "\n".join(
+            stderr_lines[-10:] or stdout_lines[-10:]
+        ) or f"mega-get завершился с кодом {rc}"
+        raise RuntimeError(f"mega-get завершился с ошибкой (код {rc}):\n{err_context}")
+
+    # 4. rc == 0, но файлов нет — тихий провал (бывает при квоте)
+    files_downloaded = list(target_dir.rglob("*"))
+    actual_files = [f for f in files_downloaded if f.is_file()]
+    if not actual_files:
+        hint = " (возможно исчерпана квота)" if any(
+            "quota" in l.lower() or "bandwidth" in l.lower()
+            for l in stdout_lines + stderr_lines
+        ) else ""
+        raise RuntimeError(
+            f"mega-get завершился успешно, но файлы не скачались{hint}. "
+            "Проверьте ссылку или квоту MEGA."
+        )
 
 
 # ── Утилиты для работы с локальными файлами ──────────────────────────────────
