@@ -216,9 +216,13 @@ http://1.2.3.4:3128" style="min-height:140px; font-size:12px;"></textarea>
 
       <!-- Очередь загрузки -->
       <div class="panel">
-        <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
           <h3 style="margin:0">Очередь загрузки</h3>
-          <button class="secondary btn-sm" onclick="clearDone()">Очистить завершённые</button>
+          <div style="display:flex; gap:6px;">
+            <button class="secondary btn-sm" onclick="restartErrors()" title="Сбросить статус ошибок и поставить заново в очередь">🔄 Повторить ошибки</button>
+            <button class="secondary btn-sm" onclick="clearDone()" title="Удалить завершённые задачи">Очистить завершённые</button>
+            <button class="secondary btn-sm" onclick="clearAll()" title="Очистить всю очередь">🗑️</button>
+          </div>
         </div>
         <div style="overflow-x:auto;">
           <table>
@@ -558,8 +562,11 @@ async function refresh(){
 async function startQueue(){ await api("/api/start",{method:"POST"}); refresh(); }
 async function stopQueue(){ await api("/api/stop",{method:"POST"}); refresh(); }
 async function clearDone(){ await api("/api/clear_done",{method:"POST"}); refresh(); }
+async function restartErrors(){ await api("/api/restart_errors",{method:"POST"}); refresh(); }
+async function clearAll(){ if(confirm("Очистить всю очередь задач?")){ await api("/api/clear_all",{method:"POST"}); refresh(); } }
 
 setInterval(refresh,2000); refresh();
 </script>
 </body>
 </html>
+

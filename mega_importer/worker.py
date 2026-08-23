@@ -45,7 +45,7 @@ def process_task(task: dict) -> None:
             error=None,
         )
 
-        # ── 1. Скачиваем из MEGA (с авторотацией прокси при квоте) ────────────
+        # ── 1. Скачиваем из MEGA (с авторотацией прокси при квоте/сбоях) ───────
         while True:
             if stop_event.is_set():
                 raise RuntimeError("Остановлено пользователем")
@@ -55,14 +55,27 @@ def process_task(task: dict) -> None:
                 break  # скачивание успешно завершено
             except Exception as download_err:
                 err_msg = str(download_err)
+                err_lower = err_msg.lower()
+
                 is_quota = any(
-                    kw in err_msg.lower()
+                    kw in err_lower
                     for kw in ["квота", "quota", "bandwidth", "зависло", "нет прогресса", "limit"]
                 )
+                is_proxy_failure = any(
+                    kw in err_lower
+                    for kw in [
+                        "access denied", "failed to get account", "failed to connect",
+                        "connection refused", "network error", "proxy", "код 11",
+                        "код 9", "could not connect", "timed out"
+                    ]
+                )
 
-                if is_quota and proxy_manager.auto_rotate:
-                    add_log("⚠️ Обнаружена квота или замирание потока. Пробую сменить прокси...", "WARNING")
-                    rotated = proxy_manager.rotate_on_quota()
+                if (is_quota or is_proxy_failure) and proxy_manager.auto_rotate:
+                    reason = "квоты" if is_quota else "сбоя прокси"
+                    mark_type = "quota_exceeded" if is_quota else "offline"
+                    add_log(f"⚠️ Ошибка {reason}: {err_msg.splitlines()[0][:70]}... Пробую сменить прокси.", "WARNING")
+                    
+                    rotated = proxy_manager.rotate_on_quota(mark_as=mark_type, error_msg=err_msg.splitlines()[0][:40])
                     if rotated:
                         add_log("🔄 Прокси переключен. Возобновляю скачивание с места остановки...", "OK")
                         time.sleep(2)

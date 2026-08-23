@@ -112,8 +112,29 @@ def get_next_task() -> dict | None:
     return None
 
 
+def restart_errored_tasks() -> int:
+    """Сбросить статус всех задач с ошибкой на 'queued', чтобы они повторились при запуске."""
+    count = 0
+    with lock:
+        for t in STATE["tasks"]:
+            if t["status"] in ("error", "retry"):
+                t["status"] = "queued"
+                t["retries"] = 0
+                t["error"] = None
+                count += 1
+        save_tasks_to_disk()
+    return count
+
+
 def clear_finished_tasks() -> None:
     """Удалить из очереди все завершённые (done) задачи."""
     with lock:
         STATE["tasks"] = [t for t in STATE["tasks"] if t["status"] != "done"]
+        save_tasks_to_disk()
+
+
+def clear_all_tasks() -> None:
+    """Очистить всю очередь задач."""
+    with lock:
+        STATE["tasks"] = []
         save_tasks_to_disk()

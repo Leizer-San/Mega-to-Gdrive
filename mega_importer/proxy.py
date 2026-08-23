@@ -338,29 +338,31 @@ class ProxyManager:
 
             return online_proxies[0]
 
-    def rotate_on_quota(self) -> bool:
+    def rotate_on_quota(self, mark_as: str = "quota_exceeded", error_msg: str = "Квота исчерпана") -> bool:
         """
-        Сменить прокси при исчерпании квоты MEGA.
+        Сменить прокси при исчерпании квоты MEGA или отказе прокси.
         Возвращает True, если удалось переключиться на следующий рабочий прокси.
         """
         with self._lock:
             if not self.auto_rotate:
                 return False
 
-            # Помечаем текущий как исчерпавший квоту
+            # Помечаем текущий прокси
             if self.active_proxy_id:
                 for p in self.proxies:
                     if p["id"] == self.active_proxy_id:
-                        p["status"] = "quota_exceeded"
+                        p["status"] = mark_as
+                        p["error"] = error_msg[:50]
                         break
                 self.save_to_disk()
 
             next_p = self.get_next_working_proxy()
             if not next_p:
-                add_log("⚠️ Нет доступных рабочих прокси для ротации!", level="WARNING")
+                add_log("⚠️ Нет доступных рабочих прокси для ротации! Отключаю mega-proxy (прямое соединение)...", level="WARNING")
+                self.disable_megacmd_proxy()
                 return False
 
-        add_log(f"🔄 Ротация прокси при квоте -> {next_p['host']}:{next_p['port']} ({next_p.get('protocol', '').upper()})")
+        add_log(f"🔄 Ротация прокси -> {next_p['host']}:{next_p['port']} ({next_p.get('protocol', '').upper()})")
         return self.apply_megacmd_proxy(next_p)
 
 
