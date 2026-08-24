@@ -213,14 +213,14 @@ def api_proxies_use():
     data = request.get_json(force=True) or {}
     pid = data.get("id")
     if pid is None:
-        proxy_manager.disable_megacmd_proxy(restart=True)
+        proxy_manager.disable_megacmd_proxy(restart=False)
         return jsonify({"message": "Используется прямое подключение"})
 
     target_proxy = next((p for p in proxy_manager.proxies if p["id"] == pid), None)
     if not target_proxy:
         return jsonify({"error": "Прокси не найден"}), 404
 
-    ok = proxy_manager.apply_megacmd_proxy(target_proxy, restart=True)
+    ok = proxy_manager.apply_megacmd_proxy(target_proxy, restart=False)
     if ok:
         display_name = target_proxy.get("display_name") or f"{target_proxy['host']}:{target_proxy['port']}"
         return jsonify({"message": f"Подключено: {display_name}"})

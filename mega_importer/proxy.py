@@ -459,12 +459,6 @@ class ProxyManager:
         """
         Применить прокси в MEGAcmd через команду mega-proxy.
         Логин/пароль передаются через флаги --username / --password.
-
-        Args:
-            proxy: словарь прокси
-            restart: если True — полный перезапуск mega-cmd-server с очисткой
-                     кеша сессии. Необходим при ротации после квоты, т.к.
-                     MEGAcmd кеширует состояние квоты внутри демона.
         """
         if restart:
             restart_megacmd_server()
@@ -502,6 +496,11 @@ class ProxyManager:
             if res.returncode == 0 or "PROXY_CUSTOM" in res.stdout:
                 with self._lock:
                     self.active_proxy_id = proxy["id"]
+                # Возобновляем активные передачи через новый прокси
+                try:
+                    subprocess.run(["mega-transfers", "-r", "-a"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+                except Exception:
+                    pass
                 add_log(f"✅ Прокси подключен: {name}")
                 return True
             else:
@@ -523,6 +522,7 @@ class ProxyManager:
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 timeout=10,
             )
+            subprocess.run(["mega-transfers", "-r", "-a"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
         except Exception:
             pass
         with self._lock:
@@ -538,17 +538,8 @@ class ProxyManager:
 
     def rotate_on_quota(self, error_msg: str = "") -> bool:
         """
-        Сменить прокси при исчерпании квоты MEGA.
-
-        Логика:
-        1. Помечает текущий прокси как quota_exceeded.
-        2. Ищет следующий прокси со статусом online.
-        3. Если нашёл — применяет его, возвращает True.
-        4. Если не нашёл — отключает прокси, возвращает False.
-
-        Защита от бесконечных циклов:
-        - Счётчик _rotation_attempts не позволяет перебрать более
-          (кол-во прокси + 1) за одну задачу.
+        Сменить прокси при исчерпании квоты MEGA «на лету» без перезапуска демона,
+        чтобы сохранить состояние чанков для бесшовной докачки.
         """
         with self._lock:
             if not self.auto_rotate:
@@ -586,7 +577,7 @@ class ProxyManager:
 
         name = self._display_name(next_p)
         add_log(f"🔄 Ротация -> {name}")
-        return self.apply_megacmd_proxy(next_p, restart=True)
+        return self.apply_megacmd_proxy(next_p, restart=False)
 
     def _pick_next_online_proxy(self) -> dict | None:
         """

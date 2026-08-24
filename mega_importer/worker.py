@@ -138,7 +138,7 @@ def process_task(task: dict) -> None:
                     # Ротация не удалась или выключена.
                     # Если прокси был активен — пробуем прямое подключение (1 раз).
                     if proxy_manager.active_proxy_id is not None:
-                        proxy_manager.disable_megacmd_proxy(restart=True)
+                        proxy_manager.disable_megacmd_proxy(restart=False)
                         add_log("⚠️ Пробую прямое подключение...", "WARNING")
                         time.sleep(2)
                         continue
