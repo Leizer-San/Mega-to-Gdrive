@@ -260,49 +260,6 @@ def mega_get(url: str, target_dir: Path, task_id: str | None = None) -> None:
 
 # ── Утилиты для работы с локальными файлами ──────────────────────────────────
 
-def cleanup_downloaded_duplicates(root: Path) -> int:
-    """
-    Устранить дубликаты файлов вида 'name (1).ext', создаваемые MEGAcmd при повторных попытках.
-    Если есть 'file.ext' и 'file (1).ext':
-      - Оставляем файл большего размера (полный) или более свежий
-      - Удаляем неполный/дубликат и переименовываем лучший вариант в исходное имя 'file.ext'
-    """
-    dup_pattern = re.compile(r"^(.*?)\s*\(\d+\)(\.[^.]*)?$")
-    removed_count = 0
-
-    for dirpath, _, filenames in os.walk(root):
-        dir_p = Path(dirpath)
-        for fname in filenames:
-            m = dup_pattern.match(fname)
-            if not m:
-                continue
-            base_name = m.group(1)
-            ext = m.group(2) or ""
-            orig_name = f"{base_name}{ext}"
-            orig_path = dir_p / orig_name
-            dup_path = dir_p / fname
-
-            if not dup_path.exists():
-                continue
-
-            if orig_path.exists():
-                orig_size = orig_path.stat().st_size
-                dup_size = dup_path.stat().st_size
-                # Оставляем файл большего размера
-                if dup_size >= orig_size:
-                    orig_path.unlink()
-                    dup_path.rename(orig_path)
-                else:
-                    dup_path.unlink()
-                removed_count += 1
-            else:
-                dup_path.rename(orig_path)
-
-    if removed_count > 0:
-        add_log(f"Очищено {removed_count} дубликатов файлов MEGAcmd", "OK")
-    return removed_count
-
-
 def all_files(root: Path):
     """Рекурсивно перебрать все файлы в директории."""
     for p in root.rglob("*"):
@@ -367,9 +324,6 @@ def apply_zip_mode(task_dir: Path, zip_mode: str) -> None:
         "subfolders" — каждую подпапку в отдельный .zip
     """
     from .helpers import sanitize_filename
-
-    # Перед архивацией обязательно очищаем любые дубликаты '(1)'
-    cleanup_downloaded_duplicates(task_dir)
 
     entries = list(task_dir.iterdir())
     is_single_file = len(entries) == 1 and entries[0].is_file()
