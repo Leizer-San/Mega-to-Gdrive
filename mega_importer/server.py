@@ -5,6 +5,7 @@ server.py — Flask-приложение и все API-маршруты.
 чтобы HTML не был захардкожен в Python-строку.
 """
 import json
+import re
 import threading
 from pathlib import Path
 
@@ -85,11 +86,13 @@ def api_tasks():
             raise ValueError("Указанный ID не является папкой.")
         added = 0
         for t in tasks_data:
-            url      = str(t.get("url",      "")).strip()
+            raw_url  = str(t.get("url",      "")).strip()
             zip_mode = str(t.get("zip_mode", "none")).strip()
-            if validate_mega_url(url):
-                create_task(url, destination, zip_mode)
-                added += 1
+            sub_urls = [u.strip() for u in re.split(r"[\r\n;]+", raw_url) if u.strip()]
+            for url in sub_urls:
+                if validate_mega_url(url):
+                    create_task(url, destination, zip_mode)
+                    added += 1
         return jsonify({"message": f"Добавлено задач: {added}"})
     except Exception as e:
         return jsonify({"message": str(e)}), 400
