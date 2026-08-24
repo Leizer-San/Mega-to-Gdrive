@@ -90,7 +90,7 @@ def process_task(task: dict) -> None:
                 raise RuntimeError("Остановлено пользователем")
 
             try:
-                mega_get(url, task_dir)
+                mega_get(url, task_dir, task_id=tid)
                 break  # успех
             except Exception as download_err:
                 err_msg = str(download_err)
@@ -135,7 +135,7 @@ def process_task(task: dict) -> None:
                     # Ротация не удалась или выключена.
                     # Если прокси был активен — пробуем прямое подключение (1 раз).
                     if proxy_manager.active_proxy_id is not None:
-                        proxy_manager.disable_megacmd_proxy()
+                        proxy_manager.disable_megacmd_proxy(restart=True)
                         add_log("⚠️ Пробую прямое подключение...", "WARNING")
                         time.sleep(2)
                         continue

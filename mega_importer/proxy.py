@@ -59,6 +59,92 @@ def ensure_megacmd_server_running() -> None:
         time.sleep(2 + attempt)
 
 
+def restart_megacmd_server() -> None:
+    """
+    Полный перезапуск mega-cmd-server с очисткой кеша сессии.
+
+    MEGAcmd кеширует состояние квоты и привязку IP внутри демона
+    и в файле ~/.megaCmd/session. Простая смена прокси через mega-proxy
+    НЕ сбрасывает этот кеш — демон продолжает считать, что квота
+    исчерпана на старом IP. Поэтому при ротации прокси необходимо:
+      1. Остановить демон (mega-quit)
+      2. Убить оставшиеся процессы (killall)
+      3. Удалить файл сессии (~/.megaCmd/session)
+      4. Запустить демон заново
+      5. Дождаться готовности (mega-version)
+    """
+    from pathlib import Path
+
+    add_log("PROXY: Перезапуск mega-cmd-server (очистка кеша сессии)...")
+
+    # 1. Мягкая остановка
+    try:
+        subprocess.run(
+            ["mega-quit"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=8,
+        )
+    except Exception:
+        pass
+    time.sleep(1)
+
+    # 2. Жёсткое завершение оставшихся процессов
+    try:
+        subprocess.run(
+            ["killall", "-9", "mega-cmd-server"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except Exception:
+        pass
+    try:
+        subprocess.run(
+            ["killall", "-9", "mega-cmd"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=5,
+        )
+    except Exception:
+        pass
+    time.sleep(1)
+
+    # 3. Очистка файла сессии (сбрасывает привязку к IP и квоту)
+    session_file = Path.home() / ".megaCmd" / "session"
+    try:
+        if session_file.exists():
+            session_file.unlink()
+            add_log("PROXY: Файл сессии удалён")
+    except Exception:
+        pass
+
+    # 4. Запуск демона
+    try:
+        subprocess.Popen(
+            ["mega-cmd-server"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except Exception:
+        pass
+
+    # 5. Ожидание готовности (до 10 секунд)
+    for i in range(5):
+        time.sleep(2)
+        try:
+            res = subprocess.run(
+                ["mega-version"],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, timeout=5,
+            )
+            if res.returncode == 0 and "stopped" not in res.stdout.lower():
+                add_log("PROXY: mega-cmd-server перезапущен и готов")
+                return
+        except Exception:
+            pass
+
+    add_log("⚠️ mega-cmd-server не ответил после перезапуска", level="WARNING")
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Парсинг строк прокси
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -361,12 +447,21 @@ class ProxyManager:
 
     # ── Управление MEGAcmd proxy ─────────────────────────────────────────────
 
-    def apply_megacmd_proxy(self, proxy: dict) -> bool:
+    def apply_megacmd_proxy(self, proxy: dict, restart: bool = False) -> bool:
         """
         Применить прокси в MEGAcmd через команду mega-proxy.
         Логин/пароль передаются через флаги --username / --password.
+
+        Args:
+            proxy: словарь прокси
+            restart: если True — полный перезапуск mega-cmd-server с очисткой
+                     кеша сессии. Необходим при ротации после квоты, т.к.
+                     MEGAcmd кеширует состояние квоты внутри демона.
         """
-        ensure_megacmd_server_running()
+        if restart:
+            restart_megacmd_server()
+        else:
+            ensure_megacmd_server_running()
 
         proto = (proxy.get("protocol") or "http").lower()
         if proto in ("unknown", "https"):
@@ -408,9 +503,12 @@ class ProxyManager:
             add_log(f"⚠️ mega-proxy исключение: {e}", level="WARNING")
             return False
 
-    def disable_megacmd_proxy(self) -> None:
+    def disable_megacmd_proxy(self, restart: bool = False) -> None:
         """Отключить прокси в MEGAcmd (прямое соединение)."""
-        ensure_megacmd_server_running()
+        if restart:
+            restart_megacmd_server()
+        else:
+            ensure_megacmd_server_running()
         try:
             subprocess.run(
                 ["mega-proxy", "--none"],
@@ -480,7 +578,7 @@ class ProxyManager:
 
         name = self._display_name(next_p)
         add_log(f"🔄 Ротация -> {name}")
-        return self.apply_megacmd_proxy(next_p)
+        return self.apply_megacmd_proxy(next_p, restart=True)
 
     def _pick_next_online_proxy(self) -> dict | None:
         """

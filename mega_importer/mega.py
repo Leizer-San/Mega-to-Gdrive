@@ -12,7 +12,7 @@ import zipfile
 from pathlib import Path
 
 from .helpers import add_log, update_state
-from .state import stop_event
+from .state import stop_event, update_task
 
 # ── Валидация URL ─────────────────────────────────────────────────────────────
 MEGA_URL_RE = re.compile(r"^https?://(?:www\.)?mega\.(?:nz|co\.nz)/", re.I)
@@ -54,15 +54,15 @@ def _get_quota_wait_hint(text: str) -> str:
 
 
 
-def mega_get(url: str, target_dir: Path) -> None:
+def mega_get(url: str, target_dir: Path, task_id: str | None = None) -> None:
     """
     Скачать файл/папку по MEGA-ссылке в target_dir с помощью mega-get.
 
     Особенности:
     - Потоки stdout и stderr вычитываются параллельно в неблокирующую очередь
-    - Таймер зависания (45 сек) отслеживает сдвиг прогресса: если MEGA исчерпала квоту
+    - Таймер зависания отслеживает сдвиг прогресса: если MEGA исчерпала квоту
       и перестала передавать данные, процесс немедленно прерывается с ясным сообщением
-    - Прогресс в реальном времени транслируется в статус веб-интерфейса
+    - Прогресс в реальном времени транслируется в статус веб-интерфейса и таблицу задач
     """
     import queue
     import threading
@@ -72,6 +72,7 @@ def mega_get(url: str, target_dir: Path) -> None:
 
     cmd = ["mega-get", "--ignore-quota-warn", url, str(target_dir)]
     add_log(f"MEGA: начинаю скачивание {url}")
+    update_state(message="MEGA: подключение к серверу и проверка файлов…")
 
     process = subprocess.Popen(
         cmd,
@@ -143,6 +144,9 @@ def mega_get(url: str, target_dir: Path) -> None:
 
                 if is_progress:
                     match = re.search(r"\(([^)]+)\)", clean)
+                    pct_match = re.search(r"([\d.]+)\s*%", clean)
+                    pct = float(pct_match.group(1)) if pct_match else None
+
                     if match and ("%" in match.group(1) or "B" in match.group(1)):
                         prog_text = match.group(1).strip()
                         # Если изменились байты / проценты — сбрасываем таймер зависания
@@ -154,7 +158,12 @@ def mega_get(url: str, target_dir: Path) -> None:
                         msg = "Скачивание из MEGA..."
 
                     if now - last_ui_update_time > 0.8:
-                        update_state(message=msg)
+                        if pct is not None:
+                            update_state(message=msg, overall_progress=pct)
+                            if task_id:
+                                update_task(task_id, progress=pct)
+                        else:
+                            update_state(message=msg)
                         last_ui_update_time = now
                 else:
                     if stream_name == "stderr":

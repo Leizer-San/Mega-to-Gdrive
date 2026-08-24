@@ -550,6 +550,8 @@ async function refresh(){
       let progText = Number(t.progress||0).toFixed(1) + "%";
       if(t.status === 'uploading' && (t.progress == null || t.progress === 0)) {
          progText = "⏳ передача...";
+      } else if(t.status === 'downloading' && (t.progress == null || t.progress === 0)) {
+         progText = "⏳ скачивание...";
       }
       return `
       <tr>
