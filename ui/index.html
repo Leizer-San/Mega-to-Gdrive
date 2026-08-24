@@ -266,9 +266,10 @@ http://1.2.3.4:3128" style="min-height:140px; font-size:12px;"></textarea>
         </div>
 
         <!-- Кнопки управления пулом -->
-        <div style="display:flex; gap:8px; margin-bottom:12px;">
+        <div style="display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap;">
           <button class="secondary btn-sm" style="flex:1" onclick="checkAllProxies()">🔄 Проверить все</button>
-          <button class="secondary btn-sm" style="flex:1" onclick="clearDeadProxies()">🗑️ Очистить мёртвые</button>
+          <button class="secondary btn-sm" style="flex:1" onclick="resetQuotaProxies()">♻️ Сброс квот</button>
+          <button class="secondary btn-sm" style="flex:1" onclick="clearDeadProxies()">🗑️ Мёртвые</button>
         </div>
 
         <!-- Список прокси -->
@@ -430,6 +431,11 @@ async function clearDeadProxies() {
   refresh();
 }
 
+async function resetQuotaProxies() {
+  await api("/api/proxies/reset_quota", {method: "POST"});
+  refresh();
+}
+
 async function deleteProxy(id, event) {
   if(event) event.stopPropagation();
   await api("/api/proxies/delete", {
@@ -473,10 +479,11 @@ function renderProxies(pxState) {
   const activeProxy = (pxState.proxies || []).find(p => p.id === activeId);
 
   if(activeProxy) {
+    const aName = activeProxy.display_name || `${activeProxy.host}:${activeProxy.port}`;
     $("activeProxyLabel").innerHTML = `
       <span class="status-dot dot-online"></span> 
-      <span>${esc(activeProxy.host)}:${esc(activeProxy.port)}</span>
-      <span class="proxy-badge badge-${esc(activeProxy.protocol||'http')}">${esc(activeProxy.protocol||'HTTP')}</span>
+      <span>${esc(aName)}</span>
+      <span class="proxy-badge badge-${esc(activeProxy.protocol||'http')}">${esc((activeProxy.protocol||'HTTP').toUpperCase())}</span>
       <button class="secondary btn-sm" style="padding:2px 6px; margin-left:auto;" onclick="useProxy(null)">Сброс</button>
     `;
   } else {
@@ -511,7 +518,7 @@ function renderProxies(pxState) {
       <div class="proxy-item ${isActive ? 'active' : ''}" onclick="useProxy('${p.id}')" title="Кликните для переключения">
         <span class="status-dot ${dotClass}" title="${esc(statusText)}"></span>
         <div class="proxy-info">
-          <div class="proxy-host">${esc(p.host)}:${esc(p.port)}</div>
+          <div class="proxy-host">${esc(p.display_name || (p.host + ':' + p.port))}</div>
           <div class="proxy-meta">
             <span class="proxy-badge ${protoClass}">${esc((p.protocol || 'HTTP').toUpperCase())}</span>
             <span>${esc(statusText)}</span>

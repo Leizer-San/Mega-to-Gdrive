@@ -2,76 +2,87 @@
 proxy.py — Менеджер пула прокси для MEGA.
 
 Возможности:
-  - Парсинг различных форматов (ip:port, ip:port:user:pass, protocol://user:pass@ip:port)
-  - Полная поддержка прокси с логином и паролем (URL-encoding)
-  - Автоопределение протокола (HTTP, SOCKS5, SOCKS4) и проверка доступности с замером пинга
-  - Управление настройками mega-proxy (применение, сброс, ротация)
-  - Контроль работы демона mega-cmd-server (автоматический перезапуск при сбоях)
-  - Автоматическое сохранение/загрузка списка с Google Drive
+  - Парсинг форматов: ip:port, ip:port:user:pass, protocol://user:pass@ip:port
+  - Поддержка нескольких учётных записей на одном host:port
+  - Автоопределение протокола (HTTP, SOCKS5, SOCKS4) с замером пинга
+  - Управление mega-proxy (применение, отключение, ротация)
+  - Контроль демона mega-cmd-server (автоперезапуск при сбоях)
+  - Счётчик ротаций и защита от бесконечных циклов
+  - Персистентное хранение на Google Drive
 """
 from __future__ import annotations
 
 import json
-import re
-import socket
 import subprocess
 import threading
 import time
 import urllib.parse
-import urllib.request
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 from .config import PROXIES_FILE
 from .helpers import add_log
 
 
-# ── Управление демоном MEGAcmd ────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# Демон MEGAcmd
+# ═══════════════════════════════════════════════════════════════════════════════
 
-def ensure_megacmd_server_running() -> bool:
-    """Убедиться, что mega-cmd-server работает и отвечает."""
-    try:
-        res = subprocess.run(
-            ["mega-version"],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            timeout=8,
-        )
-        if res.returncode == 0 and "stopped" not in res.stdout.lower():
-            return True
-    except Exception:
-        pass
+def ensure_megacmd_server_running() -> None:
+    """Убедиться, что mega-cmd-server работает и отвечает на команды."""
+    for attempt in range(3):
+        try:
+            res = subprocess.run(
+                ["mega-version"],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                timeout=8,
+            )
+            if res.returncode == 0 and "stopped" not in res.stdout.lower():
+                return
+        except Exception:
+            pass
 
-    # Если сервер не отвечает — запускаем его
-    try:
-        subprocess.Popen(
-            ["mega-cmd-server"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            start_new_session=True,
-        )
-        time.sleep(2)
-    except Exception:
-        pass
-    return True
+        # Запускаем сервер
+        try:
+            subprocess.Popen(
+                ["mega-cmd-server"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except Exception:
+            pass
+        time.sleep(2 + attempt)
 
 
-# ── Парсинг строк прокси ──────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# Парсинг строк прокси
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def _proxy_unique_key(p: dict) -> str:
+    """
+    Уникальный ключ прокси: host:port:username.
+    Позволяет хранить несколько прокси с одинаковым host:port,
+    но разными учётными записями (типично для ротационных прокси).
+    """
+    user = (p.get("username") or "").strip().lower()
+    return f"{p['host'].lower()}:{p['port']}:{user}"
+
 
 def parse_proxy_string(text: str) -> dict | None:
     """
-    Разобрать строку прокси в словарь параметров.
+    Разобрать строку прокси в словарь.
 
     Поддерживаемые форматы:
-      - http://user:pass@1.2.3.4:8080
-      - socks5://1.2.3.4:1080
-      - 1.2.3.4:8080:user:pass
-      - user:pass@1.2.3.4:8080
-      - 1.2.3.4:8080
+      - http://user:pass@host:port
+      - socks5://host:port
+      - host:port:user:pass
+      - user:pass@host:port
+      - host:port
     """
     text = text.strip()
     if not text or text.startswith("#"):
@@ -81,26 +92,27 @@ def parse_proxy_string(text: str) -> dict | None:
     username = None
     password = None
 
-    # 1. Извлекаем схему (если есть)
+    # 1. Схема
     if "://" in text:
-        parts = text.split("://", 1)
-        protocol = parts[0].lower().strip()
-        text = parts[1]
+        scheme, text = text.split("://", 1)
+        protocol = scheme.lower().strip()
 
-    # 2. Формат user:pass@host:port
+    # 2. user:pass@host:port
     if "@" in text:
-        auth_part, host_part = text.split("@", 1)
+        auth_part, text = text.rsplit("@", 1)
         if ":" in auth_part:
             username, password = auth_part.split(":", 1)
         else:
             username = auth_part
-        text = host_part
 
-    # 3. Формат host:port:user:pass или host:port
+    # 3. host:port[:user:pass]
     pieces = text.split(":")
     if len(pieces) >= 4 and username is None:
         host = pieces[0].strip()
-        port = int(pieces[1].strip())
+        try:
+            port = int(pieces[1].strip())
+        except ValueError:
+            return None
         username = pieces[2].strip()
         password = ":".join(pieces[3:]).strip()
     elif len(pieces) >= 2:
@@ -116,50 +128,26 @@ def parse_proxy_string(text: str) -> dict | None:
         return None
 
     return {
-        "id": uuid.uuid4().hex[:10],
+        "id": uuid.uuid4().hex[:12],
         "host": host,
         "port": port,
-        "protocol": protocol,  # "http", "https", "socks5", "socks4", "unknown"
-        "username": username,
-        "password": password,
-        "status": "untested",  # "online", "offline", "untested", "quota_exceeded"
+        "protocol": protocol,
+        "username": username or None,
+        "password": password or None,
+        "status": "untested",
         "ping": None,
         "error": None,
         "last_checked": None,
     }
 
 
-def format_proxy_url(p: dict) -> str:
-    """Вернуть полный URL прокси для mega-proxy с поддержкой логина/пароля."""
-    proto = p.get("protocol", "http")
-    if proto in ("unknown", "https"):
-        proto = "http"
-    if proto == "socks5":
-        proto = "socks5h"  # DNS resolution via proxy
-    elif proto == "socks4":
-        proto = "socks4a"
+# ═══════════════════════════════════════════════════════════════════════════════
+# Проверка доступности
+# ═══════════════════════════════════════════════════════════════════════════════
 
-    host = p["host"]
-    port = p["port"]
-    user = p.get("username")
-    pwd = p.get("password")
-
-    if user and pwd:
-        safe_user = urllib.parse.quote(user, safe="")
-        safe_pwd = urllib.parse.quote(pwd, safe="")
-        return f"{proto}://{safe_user}:{safe_pwd}@{host}:{port}"
-    return f"{proto}://{host}:{port}"
-
-
-# ── Проверка доступности и автоопределение протокола ──────────────────────────
-
-def _test_single_protocol(host: str, port: int, protocol: str, username: str | None, password: str | None, timeout: float = 4.0) -> tuple[bool, int, str | None]:
-    """
-    Протестировать конкретный протокол.
-    Возвращает (success: bool, latency_ms: int, error_message: str | None).
-    """
-    import requests
-
+def _build_requests_proxy_url(host: str, port: int, protocol: str,
+                               username: str | None, password: str | None) -> str:
+    """Собрать URL прокси для библиотеки requests (с URL-encoding учётных данных)."""
     scheme = "http"
     if protocol == "socks5":
         scheme = "socks5h"
@@ -167,39 +155,42 @@ def _test_single_protocol(host: str, port: int, protocol: str, username: str | N
         scheme = "socks4a"
 
     if username and password:
-        safe_u = urllib.parse.quote(username, safe="")
-        safe_p = urllib.parse.quote(password, safe="")
-        proxy_url = f"{scheme}://{safe_u}:{safe_p}@{host}:{port}"
-    else:
-        proxy_url = f"{scheme}://{host}:{port}"
+        u = urllib.parse.quote(username, safe="")
+        p = urllib.parse.quote(password, safe="")
+        return f"{scheme}://{u}:{p}@{host}:{port}"
+    return f"{scheme}://{host}:{port}"
 
+
+def _test_single_protocol(host: str, port: int, protocol: str,
+                           username: str | None, password: str | None,
+                           timeout: float = 5.0) -> tuple[bool, int, str | None]:
+    """Проверить один протокол. Возвращает (ok, latency_ms, error_msg)."""
+    import requests
+
+    proxy_url = _build_requests_proxy_url(host, port, protocol, username, password)
     proxies = {"http": proxy_url, "https": proxy_url}
     test_url = "http://connectivitycheck.gstatic.com/generate_204"
 
-    start_time = time.time()
+    t0 = time.time()
     try:
         resp = requests.get(test_url, proxies=proxies, timeout=timeout)
-        latency = int((time.time() - start_time) * 1000)
+        latency = int((time.time() - t0) * 1000)
         if resp.status_code in (200, 204):
             return True, latency, None
         return False, latency, f"HTTP {resp.status_code}"
     except Exception as e:
-        err_msg = str(e)
-        if "timeout" in err_msg.lower():
-            err_msg = "Таймаут"
-        elif "connection refused" in err_msg.lower():
-            err_msg = "Отказ в соединении"
-        elif "proxy" in err_msg.lower() or "socks" in err_msg.lower():
-            err_msg = "Ошибка прокси"
-        else:
-            err_msg = err_msg[:50]
-        return False, 0, err_msg
+        msg = str(e).lower()
+        if "timeout" in msg or "timed out" in msg:
+            return False, 0, "Таймаут"
+        if "connection refused" in msg:
+            return False, 0, "Отказ в соединении"
+        if "proxy" in msg or "socks" in msg:
+            return False, 0, "Ошибка прокси"
+        return False, 0, str(e)[:60]
 
 
 def check_proxy(p: dict) -> dict:
-    """
-    Проверить работоспособность прокси и автоопределить протокол, если он не указан.
-    """
+    """Проверить доступность прокси и автоопределить протокол."""
     host = p["host"]
     port = p["port"]
     proto = p.get("protocol", "unknown")
@@ -208,10 +199,10 @@ def check_proxy(p: dict) -> dict:
 
     p["status"] = "checking"
 
-    protocols_to_try = [proto] if proto != "unknown" else ["http", "socks5", "socks4"]
-
-    for pr in protocols_to_try:
-        ok, latency, err = _test_single_protocol(host, port, pr, user, pwd, timeout=4.0)
+    protocols = [proto] if proto != "unknown" else ["http", "socks5", "socks4"]
+    err = None
+    for pr in protocols:
+        ok, latency, err = _test_single_protocol(host, port, pr, user, pwd, timeout=5.0)
         if ok:
             p["protocol"] = pr
             p["status"] = "online"
@@ -227,16 +218,22 @@ def check_proxy(p: dict) -> dict:
     return p
 
 
-# ── Менеджер пула прокси ──────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# Менеджер пула прокси
+# ═══════════════════════════════════════════════════════════════════════════════
 
 class ProxyManager:
-    """Потокобезопасный менеджер пула прокси."""
+    """Потокобезопасный менеджер пула прокси для MEGAcmd."""
 
     def __init__(self):
         self._lock = threading.RLock()
         self.proxies: list[dict] = []
         self.active_proxy_id: str | None = None
         self.auto_rotate: bool = True
+        # Счётчик ротаций в рамках одной задачи — сбрасывается извне
+        self._rotation_attempts: int = 0
+
+    # ── Персистентность ───────────────────────────────────────────────────────
 
     def load_from_disk(self) -> None:
         """Загрузить прокси из Google Drive."""
@@ -263,41 +260,44 @@ class ProxyManager:
                             "auto_rotate": self.auto_rotate,
                             "updated_at": datetime.now(timezone.utc).isoformat(),
                         },
-                        f,
-                        ensure_ascii=False,
-                        indent=2,
+                        f, ensure_ascii=False, indent=2,
                     )
             except Exception:
                 pass
 
+    # ── Управление пулом ──────────────────────────────────────────────────────
+
     def add_proxies_text(self, text: str) -> list[dict]:
-        """Разобрать многострочный текст и добавить новые прокси."""
+        """
+        Разобрать многострочный текст и добавить новые прокси.
+        Дедупликация по host:port:username — прокси с одинаковым IP но
+        разными учётными записями считаются разными.
+        """
         new_items = []
         with self._lock:
-            existing_keys = {f"{p['host']}:{p['port']}" for p in self.proxies}
+            existing_keys = {_proxy_unique_key(p) for p in self.proxies}
             for line in text.strip().splitlines():
                 parsed = parse_proxy_string(line)
                 if parsed:
-                    key = f"{parsed['host']}:{parsed['port']}"
+                    key = _proxy_unique_key(parsed)
                     if key not in existing_keys:
                         self.proxies.append(parsed)
                         existing_keys.add(key)
                         new_items.append(parsed)
             self.save_to_disk()
 
-        # Фоновая проверка добавленных прокси
         if new_items:
             threading.Thread(target=self.check_all, daemon=True).start()
 
         return new_items
 
     def check_all(self) -> None:
-        """Проверить все прокси в пуле параллельно."""
+        """Проверить все прокси параллельно."""
         with self._lock:
             items = list(self.proxies)
 
-        with ThreadPoolExecutor(max_workers=8) as executor:
-            results = list(executor.map(check_proxy, items))
+        with ThreadPoolExecutor(max_workers=10) as pool:
+            results = list(pool.map(check_proxy, items))
 
         with self._lock:
             for res in results:
@@ -316,31 +316,59 @@ class ProxyManager:
             self.save_to_disk()
 
     def clear_dead(self) -> int:
-        """Удалить все неработающие прокси."""
+        """Удалить все неработающие прокси (offline, untested, checking)."""
         with self._lock:
             before = len(self.proxies)
-            self.proxies = [p for p in self.proxies if p["status"] == "online"]
+            self.proxies = [p for p in self.proxies if p["status"] in ("online", "quota_exceeded")]
             self.save_to_disk()
             return before - len(self.proxies)
 
-    def get_state(self) -> dict:
-        """Получить снимок состояния для веб-интерфейса."""
+    def reset_quota_marks(self) -> int:
+        """Сбросить все метки quota_exceeded обратно на online для повторной ротации."""
+        count = 0
         with self._lock:
+            for p in self.proxies:
+                if p["status"] == "quota_exceeded":
+                    p["status"] = "online"
+                    p["error"] = None
+                    count += 1
+            self._rotation_attempts = 0
+            self.save_to_disk()
+        return count
+
+    def _display_name(self, p: dict) -> str:
+        """Человекочитаемое имя прокси для логов и UI."""
+        user = p.get("username")
+        if user:
+            return f"{user}@{p['host']}:{p['port']}"
+        return f"{p['host']}:{p['port']}"
+
+    def get_state(self) -> dict:
+        """Снимок состояния для веб-интерфейса."""
+        with self._lock:
+            proxies_out = []
+            for p in self.proxies:
+                entry = dict(p)
+                entry["display_name"] = self._display_name(p)
+                proxies_out.append(entry)
             return {
-                "proxies": list(self.proxies),
+                "proxies": proxies_out,
                 "active_proxy_id": self.active_proxy_id,
                 "auto_rotate": self.auto_rotate,
                 "count_total": len(self.proxies),
                 "count_online": sum(1 for p in self.proxies if p["status"] == "online"),
             }
 
-    # ── Управление MEGAcmd Proxy ──────────────────────────────────────────────
+    # ── Управление MEGAcmd proxy ─────────────────────────────────────────────
 
     def apply_megacmd_proxy(self, proxy: dict) -> bool:
-        """Применить прокси в MEGAcmd через mega-proxy с передачей флагов авторизации."""
+        """
+        Применить прокси в MEGAcmd через команду mega-proxy.
+        Логин/пароль передаются через флаги --username / --password.
+        """
         ensure_megacmd_server_running()
 
-        proto = (proxy.get("protocol") or "http").lower().strip()
+        proto = (proxy.get("protocol") or "http").lower()
         if proto in ("unknown", "https"):
             proto = "http"
         elif proto == "socks5":
@@ -360,75 +388,131 @@ class ProxyManager:
         if pwd:
             cmd.append(f"--password={pwd}")
 
-        display_auth = " (с логином и паролем)" if user else ""
-        add_log(f"PROXY: Применяю mega-proxy -> {proto.upper()}://{host}:{port}{display_auth}")
-        
-        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, timeout=15)
-        if res.returncode == 0 or "PROXY_CUSTOM" in res.stdout:
-            with self._lock:
-                self.active_proxy_id = proxy["id"]
-            add_log(f"✅ Прокси успешно подключен: {host}:{port} ({proto.upper()})")
-            return True
-        else:
-            add_log(f"⚠️ Ошибка настройки mega-proxy: {res.stdout.strip()}", level="WARNING")
-            return False
+        name = self._display_name(proxy)
+        add_log(f"PROXY: Применяю -> {name} ({proto.upper()})")
 
+        try:
+            res = subprocess.run(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, timeout=15,
+            )
+            if res.returncode == 0 or "PROXY_CUSTOM" in res.stdout:
+                with self._lock:
+                    self.active_proxy_id = proxy["id"]
+                add_log(f"✅ Прокси подключен: {name}")
+                return True
+            else:
+                add_log(f"⚠️ mega-proxy ошибка: {res.stdout.strip()[:100]}", level="WARNING")
+                return False
+        except Exception as e:
+            add_log(f"⚠️ mega-proxy исключение: {e}", level="WARNING")
+            return False
 
     def disable_megacmd_proxy(self) -> None:
         """Отключить прокси в MEGAcmd (прямое соединение)."""
         ensure_megacmd_server_running()
-        subprocess.run(["mega-proxy", "--none"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+        try:
+            subprocess.run(
+                ["mega-proxy", "--none"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+        except Exception:
+            pass
         with self._lock:
             self.active_proxy_id = None
-        add_log("PROXY: Отключен (используется прямое подключение)")
+        add_log("PROXY: Отключен (прямое соединение)")
 
-    def get_next_working_proxy(self) -> dict | None:
-        """
-        Выбрать следующий рабочий прокси из пула.
-        Возвращает словарь прокси или None, если рабочих прокси нет.
-        """
+    # ── Ротация при квоте ─────────────────────────────────────────────────────
+
+    def reset_rotation_counter(self) -> None:
+        """Сбросить счётчик ротаций (вызывается перед каждой новой задачей)."""
         with self._lock:
-            online_proxies = [p for p in self.proxies if p["status"] == "online"]
-            if not online_proxies:
-                return None
+            self._rotation_attempts = 0
 
-            # Ищем следующий после текущего активного
-            if self.active_proxy_id:
-                ids = [p["id"] for p in online_proxies]
-                if self.active_proxy_id in ids:
-                    idx = ids.index(self.active_proxy_id)
-                    next_proxy = online_proxies[(idx + 1) % len(online_proxies)]
-                    return next_proxy
-
-            return online_proxies[0]
-
-    def rotate_on_quota(self, mark_as: str = "quota_exceeded", error_msg: str = "Квота исчерпана") -> bool:
+    def rotate_on_quota(self, error_msg: str = "") -> bool:
         """
-        Сменить прокси при исчерпании квоты MEGA или отказе прокси.
-        Возвращает True, если удалось переключиться на следующий рабочий прокси.
+        Сменить прокси при исчерпании квоты MEGA.
+
+        Логика:
+        1. Помечает текущий прокси как quota_exceeded.
+        2. Ищет следующий прокси со статусом online.
+        3. Если нашёл — применяет его, возвращает True.
+        4. Если не нашёл — отключает прокси, возвращает False.
+
+        Защита от бесконечных циклов:
+        - Счётчик _rotation_attempts не позволяет перебрать более
+          (кол-во прокси + 1) за одну задачу.
         """
         with self._lock:
             if not self.auto_rotate:
                 return False
 
-            # Помечаем текущий прокси
-            if self.active_proxy_id:
-                for p in self.proxies:
-                    if p["id"] == self.active_proxy_id:
-                        p["status"] = mark_as
-                        p["error"] = error_msg[:50]
-                        break
-                self.save_to_disk()
-
-            next_p = self.get_next_working_proxy()
-            if not next_p:
-                add_log("⚠️ Нет доступных рабочих прокси для ротации! Отключаю mega-proxy (прямое соединение)...", level="WARNING")
+            max_attempts = len(self.proxies) + 1
+            self._rotation_attempts += 1
+            if self._rotation_attempts > max_attempts:
+                add_log(
+                    f"⚠️ Лимит ротации ({max_attempts}) достигнут. "
+                    "Все прокси исчерпаны.",
+                    level="WARNING",
+                )
                 self.disable_megacmd_proxy()
                 return False
 
-        add_log(f"🔄 Ротация прокси -> {next_p['host']}:{next_p['port']} ({next_p.get('protocol', '').upper()})")
+            # Помечаем текущий
+            if self.active_proxy_id:
+                for p in self.proxies:
+                    if p["id"] == self.active_proxy_id:
+                        p["status"] = "quota_exceeded"
+                        p["error"] = (error_msg or "Квота MEGA")[:60]
+                        break
+                self.save_to_disk()
+
+            # Ищем следующий online-прокси (не текущий!)
+            next_p = self._pick_next_online_proxy()
+            if not next_p:
+                add_log(
+                    "⚠️ Нет доступных online-прокси для ротации.",
+                    level="WARNING",
+                )
+                self.disable_megacmd_proxy()
+                return False
+
+        name = self._display_name(next_p)
+        add_log(f"🔄 Ротация -> {name}")
         return self.apply_megacmd_proxy(next_p)
 
+    def _pick_next_online_proxy(self) -> dict | None:
+        """
+        Выбрать следующий online-прокси, отличный от текущего активного.
+        Если активного нет — вернуть первый online.
+        """
+        # Вызывается под self._lock
+        online = [p for p in self.proxies if p["status"] == "online"]
+        if not online:
+            return None
 
-# Глобальный синглтон менеджера прокси
+        if not self.active_proxy_id:
+            return online[0]
+
+        # Найти позицию текущего и взять следующий
+        current_idx = None
+        for i, p in enumerate(online):
+            if p["id"] == self.active_proxy_id:
+                current_idx = i
+                break
+
+        if current_idx is not None:
+            next_idx = (current_idx + 1) % len(online)
+            candidate = online[next_idx]
+            # Защита: если это тот же самый — значит он единственный online
+            if candidate["id"] == self.active_proxy_id:
+                return None
+            return candidate
+
+        # Текущий не найден среди online (уже помечен) — берём первый
+        return online[0]
+
+
+# Глобальный синглтон
 proxy_manager = ProxyManager()

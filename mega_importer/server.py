@@ -196,6 +196,14 @@ def api_proxies_toggle_auto():
     return jsonify({"auto_rotate": proxy_manager.auto_rotate})
 
 
+@app.post("/api/proxies/reset_quota")
+def api_proxies_reset_quota():
+    """Сбросить метки quota_exceeded обратно на online для повторной ротации."""
+    count = proxy_manager.reset_quota_marks()
+    return jsonify({"message": f"Сброшено квот: {count}", "reset_count": count})
+
+
+
 @app.post("/api/proxies/use")
 def api_proxies_use():
     """Вручную выбрать активный прокси или отключить (id=null)."""
