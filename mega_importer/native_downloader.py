@@ -24,8 +24,8 @@ from .state import stop_event, update_task
 
 CHUNK_SIZE = 16 * 1024 * 1024  # 16 MB chunks
 MAX_CHUNK_RETRIES = 10
-PARALLEL_FOLDER_WORKERS = 8  # Parallel file downloads for folders
-PARALLEL_CHUNK_WORKERS = 4   # Parallel chunk downloads for large single files
+PARALLEL_FOLDER_WORKERS = 16  # Up to 16 parallel file downloads for folders
+PARALLEL_CHUNK_WORKERS = 8    # Up to 8 parallel chunk downloads for large single files
 
 
 def _align_down(n: int, block: int = 16) -> int:
@@ -78,7 +78,7 @@ def _save_progress(part_path: Path, file_size: int, done_starts: Set[int]) -> No
 def _create_session(proxies: Optional[dict] = None) -> requests.Session:
     """Create a persistent requests.Session with connection pooling."""
     session = requests.Session()
-    adapter = HTTPAdapter(pool_connections=16, pool_maxsize=32, max_retries=Retry(total=2, backoff_factor=0.2))
+    adapter = HTTPAdapter(pool_connections=32, pool_maxsize=64, max_retries=Retry(total=2, backoff_factor=0.2))
     session.mount("https://", adapter)
     session.mount("http://", adapter)
     if proxies:
