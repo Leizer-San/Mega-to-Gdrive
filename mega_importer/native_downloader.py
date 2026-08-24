@@ -170,6 +170,7 @@ class NativeFileDownloader:
         self,
         resolved: ResolvedFile,
         output_file_path: Path,
+        api: Optional[MegaApiClient] = None,
     ) -> Path:
         """Download and decrypt a resolved MEGA file."""
         if stop_event.is_set():
@@ -206,7 +207,7 @@ class NativeFileDownloader:
         # For small files (<= 1 chunk), download synchronously without creating thread pool
         if len(pending_chunks) <= 1:
             for start, end in pending_chunks:
-                self._download_chunk(resolved.cdn_url, part_path, start, end, key_bytes, iv_int)
+                self._download_chunk(resolved, part_path, start, end, key_bytes, iv_int, api=api)
                 done_starts.add(start)
                 _save_progress(part_path, file_size, done_starts)
         else:
@@ -215,12 +216,13 @@ class NativeFileDownloader:
                 futures = {
                     executor.submit(
                         self._download_chunk,
-                        resolved.cdn_url,
+                        resolved,
                         part_path,
                         start,
                         end,
                         key_bytes,
                         iv_int,
+                        api=api,
                     ): (start, end)
                     for start, end in pending_chunks
                 }
@@ -250,20 +252,30 @@ class NativeFileDownloader:
 
     def _download_chunk(
         self,
-        cdn_url: str,
+        resolved: ResolvedFile,
         part_path: Path,
         start: int,
         end: int,
         key_bytes: bytes,
         iv_int: int,
+        api: Optional[MegaApiClient] = None,
     ) -> None:
         """Download, decrypt, and write a single byte range."""
         chunk_len = end - start + 1
         headers = {"Range": f"bytes={start}-{end}"}
+        current_cdn_url = resolved.cdn_url
 
         for attempt in range(MAX_CHUNK_RETRIES):
             if stop_event.is_set():
                 raise RuntimeError("Остановлено пользователем")
+
+            # Re-resolve fresh CDN URL if retried multiple times
+            if attempt >= 3 and api is not None:
+                try:
+                    fresh = api.resolve_file(resolved.file_handle, resolved.key_b64, folder_id=resolved.folder_id)
+                    current_cdn_url = fresh.cdn_url
+                except Exception:
+                    pass
 
             proxy_info, req_proxies = self._pick_proxy()
             proxy_name = (
@@ -275,7 +287,7 @@ class NativeFileDownloader:
             try:
                 session = _create_session(req_proxies)
                 with session.get(
-                    cdn_url,
+                    current_cdn_url,
                     headers=headers,
                     stream=True,
                     timeout=(10, 40),
@@ -288,6 +300,17 @@ class NativeFileDownloader:
                         else:
                             self._direct_quota_hit = True
                             add_log("⏳ Квота на прямом IP. Переключаюсь на прокси-пул...", "WARNING")
+                        time.sleep(1)
+                        continue
+
+                    if resp.status_code == 403:
+                        # Expired CDN token — refresh immediately
+                        if api is not None:
+                            try:
+                                fresh = api.resolve_file(resolved.file_handle, resolved.key_b64, folder_id=resolved.folder_id)
+                                current_cdn_url = fresh.cdn_url
+                            except Exception:
+                                pass
                         time.sleep(1)
                         continue
 
@@ -353,7 +376,7 @@ def download_mega_url(
         tracker.total_files = 1
         downloader = NativeFileDownloader(tracker, concurrency=PARALLEL_CHUNK_WORKERS)
 
-        res_file = downloader.download_file(resolved, out_path)
+        res_file = downloader.download_file(resolved, out_path, api=api)
         downloaded_files.append(res_file)
         add_log(f"✅ Файл сохранён: {resolved.file_name} ({format_bytes(resolved.file_size)})", "OK")
 
@@ -369,7 +392,7 @@ def download_mega_url(
         tracker.total_files = 1
         downloader = NativeFileDownloader(tracker, concurrency=PARALLEL_CHUNK_WORKERS)
 
-        res_file = downloader.download_file(resolved, out_path)
+        res_file = downloader.download_file(resolved, out_path, api=api)
         downloaded_files.append(res_file)
         add_log(f"✅ Файл сохранён: {resolved.file_name} ({format_bytes(resolved.file_size)})", "OK")
 
@@ -396,13 +419,21 @@ def download_mega_url(
             if stop_event.is_set():
                 raise RuntimeError("Остановлено пользователем")
 
-            file_resolved = api.resolve_file(
-                item.node_handle,
-                item.key_b64,
-                folder_id=folder_id,
-            )
-            out_p = folder_root / item.rel_path
-            return downloader.download_file(file_resolved, out_p)
+            for file_attempt in range(3):
+                try:
+                    file_resolved = api.resolve_file(
+                        item.node_handle,
+                        item.key_b64,
+                        folder_id=folder_id,
+                    )
+                    out_p = folder_root / item.rel_path
+                    return downloader.download_file(file_resolved, out_p, api=api)
+                except Exception as e:
+                    if stop_event.is_set():
+                        raise
+                    if file_attempt == 2:
+                        raise
+                    time.sleep(1 + file_attempt)
 
         # Parallel file downloading pool
         workers_count = min(PARALLEL_FOLDER_WORKERS, max(2, total_items))
