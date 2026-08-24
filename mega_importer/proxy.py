@@ -249,27 +249,35 @@ def _build_requests_proxy_url(host: str, port: int, protocol: str,
 
 def _test_single_protocol(host: str, port: int, protocol: str,
                            username: str | None, password: str | None,
-                           timeout: float = 5.0) -> tuple[bool, int, str | None]:
-    """Проверить один протокол. Возвращает (ok, latency_ms, error_msg)."""
+                           timeout: float = 6.0) -> tuple[bool, int, str | None]:
+    """
+    Проверить один протокол через реальный HTTPS-запрос к API MEGA.
+    Проверяет возможность HTTPS CONNECT туннелирования и доступность серверов MEGA.
+    Возвращает (ok, latency_ms, error_msg).
+    """
     import requests
 
     proxy_url = _build_requests_proxy_url(host, port, protocol, username, password)
     proxies = {"http": proxy_url, "https": proxy_url}
-    test_url = "http://connectivitycheck.gstatic.com/generate_204"
+    # Проверяем реальное HTTPS CONNECT соединение к API MEGA
+    test_url = "https://g.api.mega.co.nz/cs"
 
     t0 = time.time()
     try:
         resp = requests.get(test_url, proxies=proxies, timeout=timeout)
         latency = int((time.time() - t0) * 1000)
+        # MEGA API возвращает 200 (или 204)
         if resp.status_code in (200, 204):
             return True, latency, None
         return False, latency, f"HTTP {resp.status_code}"
     except Exception as e:
         msg = str(e).lower()
         if "timeout" in msg or "timed out" in msg:
-            return False, 0, "Таймаут"
+            return False, 0, "Таймаут HTTPS"
         if "connection refused" in msg:
             return False, 0, "Отказ в соединении"
+        if "tunnel" in msg or "403" in msg or "407" in msg:
+            return False, 0, "Ошибка HTTPS Tunnel"
         if "proxy" in msg or "socks" in msg:
             return False, 0, "Ошибка прокси"
         return False, 0, str(e)[:60]
@@ -288,7 +296,7 @@ def check_proxy(p: dict) -> dict:
     protocols = [proto] if proto != "unknown" else ["http", "socks5", "socks4"]
     err = None
     for pr in protocols:
-        ok, latency, err = _test_single_protocol(host, port, pr, user, pwd, timeout=5.0)
+        ok, latency, err = _test_single_protocol(host, port, pr, user, pwd, timeout=6.0)
         if ok:
             p["protocol"] = pr
             p["status"] = "online"

@@ -253,6 +253,8 @@ def run(port: int | None = None) -> None:
     # Восстанавливаем очередь и пул прокси
     load_tasks_from_disk()
     proxy_manager.load_from_disk()
+    if proxy_manager.proxies:
+        threading.Thread(target=proxy_manager.check_all, daemon=True).start()
 
     # Запускаем Flask в фоне
     add_log("Запуск Flask-сервера...")
