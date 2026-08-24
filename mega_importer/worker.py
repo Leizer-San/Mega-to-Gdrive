@@ -12,7 +12,10 @@ import traceback
 from .config import DOWNLOAD_DIR, MAX_RETRIES, RESERVE_BYTES
 from .drive import drive_about, ensure_drive_folder, upload_file
 from .helpers import add_log, format_bytes, update_state
-from .mega import all_files, apply_zip_mode, build_drive_tree, local_tree_stats, mega_get
+from .mega import (
+    all_files, apply_zip_mode, build_drive_tree,
+    cleanup_downloaded_duplicates, local_tree_stats, mega_get,
+)
 from .proxy import ensure_megacmd_server_running, proxy_manager
 from .state import (
     STATE, get_next_task, lock, stop_event, update_task,
@@ -160,10 +163,13 @@ def process_task(task: dict) -> None:
                 # D. Другая ошибка — пробрасываем без ротации
                 raise download_err
 
-        # ── 2. ZIP-упаковка ──────────────────────────────────────────────────
+        # ── 2. Очистка дубликатов (1) от повторных попыток MEGAcmd ───────────
+        cleanup_downloaded_duplicates(task_dir)
+
+        # ── 3. ZIP-упаковка ──────────────────────────────────────────────────
         apply_zip_mode(task_dir, zip_mode)
 
-        # ── 3. Проверка скачанных файлов ─────────────────────────────────────
+        # ── 4. Проверка скачанных файлов ─────────────────────────────────────
         count, total = local_tree_stats(task_dir)
         if count == 0:
             raise RuntimeError("MEGA-ссылка не вернула файлов.")

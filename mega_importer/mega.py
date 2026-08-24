@@ -89,8 +89,19 @@ def mega_get(url: str, target_dir: Path, task_id: str | None = None) -> None:
 
     def _reader(pipe, stream_name: str):
         try:
-            for line in iter(pipe.readline, ""):
-                output_queue.put((stream_name, line))
+            buf = []
+            while True:
+                char = pipe.read(1)
+                if not char:
+                    if buf:
+                        output_queue.put((stream_name, "".join(buf)))
+                    break
+                if char in ("\r", "\n"):
+                    if buf:
+                        output_queue.put((stream_name, "".join(buf)))
+                        buf = []
+                else:
+                    buf.append(char)
         except Exception:
             pass
         finally:
@@ -143,21 +154,28 @@ def mega_get(url: str, target_dir: Path, task_id: str | None = None) -> None:
                 )
 
                 if is_progress:
-                    match = re.search(r"\(([^)]+)\)", clean)
                     pct_match = re.search(r"([\d.]+)\s*%", clean)
                     pct = float(pct_match.group(1)) if pct_match else None
+                    match = re.search(r"\(([^)]+)\)", clean)
+                    bytes_match = re.search(r"(\d+(?:\.\d+)?\s*(?:[kKmMgGtT]?[bB])\s*/\s*\d+(?:\.\d+)?\s*(?:[kKmMgGtT]?[bB]))", clean)
 
-                    if match and ("%" in match.group(1) or "B" in match.group(1)):
+                    if match and ("%" in match.group(1) or "B" in match.group(1).upper()):
                         prog_text = match.group(1).strip()
-                        # Если изменились байты / проценты — сбрасываем таймер зависания
-                        if prog_text != last_seen_progress:
-                            last_seen_progress = prog_text
-                            last_progress_change_time = now
-                        msg = f"MEGA: {prog_text}"
+                    elif bytes_match:
+                        prog_text = bytes_match.group(1).strip() + (f" ({pct:.1f}%)" if pct is not None else "")
+                    elif pct is not None:
+                        prog_text = f"{pct:.1f}%"
                     else:
-                        msg = "Скачивание из MEGA..."
+                        prog_text = "Скачивание..."
 
-                    if now - last_ui_update_time > 0.8:
+                    # Если изменились байты / проценты — сбрасываем таймер зависания
+                    if prog_text != last_seen_progress and prog_text != "Скачивание...":
+                        last_seen_progress = prog_text
+                        last_progress_change_time = now
+
+                    msg = f"MEGA: {prog_text}"
+
+                    if now - last_ui_update_time > 0.5:
                         if pct is not None:
                             update_state(message=msg, overall_progress=pct)
                             if task_id:
@@ -242,6 +260,49 @@ def mega_get(url: str, target_dir: Path, task_id: str | None = None) -> None:
 
 # ── Утилиты для работы с локальными файлами ──────────────────────────────────
 
+def cleanup_downloaded_duplicates(root: Path) -> int:
+    """
+    Устранить дубликаты файлов вида 'name (1).ext', создаваемые MEGAcmd при повторных попытках.
+    Если есть 'file.ext' и 'file (1).ext':
+      - Оставляем файл большего размера (полный) или более свежий
+      - Удаляем неполный/дубликат и переименовываем лучший вариант в исходное имя 'file.ext'
+    """
+    dup_pattern = re.compile(r"^(.*?)\s*\(\d+\)(\.[^.]*)?$")
+    removed_count = 0
+
+    for dirpath, _, filenames in os.walk(root):
+        dir_p = Path(dirpath)
+        for fname in filenames:
+            m = dup_pattern.match(fname)
+            if not m:
+                continue
+            base_name = m.group(1)
+            ext = m.group(2) or ""
+            orig_name = f"{base_name}{ext}"
+            orig_path = dir_p / orig_name
+            dup_path = dir_p / fname
+
+            if not dup_path.exists():
+                continue
+
+            if orig_path.exists():
+                orig_size = orig_path.stat().st_size
+                dup_size = dup_path.stat().st_size
+                # Оставляем файл большего размера
+                if dup_size >= orig_size:
+                    orig_path.unlink()
+                    dup_path.rename(orig_path)
+                else:
+                    dup_path.unlink()
+                removed_count += 1
+            else:
+                dup_path.rename(orig_path)
+
+    if removed_count > 0:
+        add_log(f"Очищено {removed_count} дубликатов файлов MEGAcmd", "OK")
+    return removed_count
+
+
 def all_files(root: Path):
     """Рекурсивно перебрать все файлы в директории."""
     for p in root.rglob("*"):
@@ -306,6 +367,9 @@ def apply_zip_mode(task_dir: Path, zip_mode: str) -> None:
         "subfolders" — каждую подпапку в отдельный .zip
     """
     from .helpers import sanitize_filename
+
+    # Перед архивацией обязательно очищаем любые дубликаты '(1)'
+    cleanup_downloaded_duplicates(task_dir)
 
     entries = list(task_dir.iterdir())
     is_single_file = len(entries) == 1 and entries[0].is_file()
