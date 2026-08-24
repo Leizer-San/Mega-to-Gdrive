@@ -206,6 +206,17 @@ def api_proxies_reset_quota():
     return jsonify({"message": f"Сброшено квот: {count}", "reset_count": count})
 
 
+@app.post("/api/proxies/scrape")
+def api_proxies_scrape():
+    """Собрать бесплатные прокси из открытых источников и добавить в пул."""
+    import threading
+    threading.Thread(
+        target=lambda: proxy_manager.scrape_and_add_free_proxies(target_count=35),
+        daemon=True,
+    ).start()
+    return jsonify({"message": "Запущен фоновый поиск и проверка бесплатных прокси..."})
+
+
 
 @app.post("/api/proxies/use")
 def api_proxies_use():

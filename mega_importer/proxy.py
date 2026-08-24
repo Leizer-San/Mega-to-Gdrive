@@ -665,6 +665,38 @@ class ProxyManager:
                     break
             self.save_to_disk()
 
+    def scrape_and_add_free_proxies(
+        self,
+        target_count: int = 30,
+        progress_cb: Optional[Callable[[str], None]] = None,
+    ) -> int:
+        """
+        Автоматически собрать бесплатные прокси из открытых источников,
+        проверить их к MEGA API и добавить работающие в пул.
+        """
+        from .proxy_scraper import scrape_and_validate_proxies
+
+        found = scrape_and_validate_proxies(target_count=target_count, progress_cb=progress_cb)
+        added_count = 0
+
+        with self._lock:
+            existing_keys = {
+                (p["host"], p["port"], p.get("username"))
+                for p in self.proxies
+            }
+            for p in found:
+                key = (p["host"], p["port"], p.get("username"))
+                if key not in existing_keys:
+                    existing_keys.add(key)
+                    self.proxies.append(p)
+                    added_count += 1
+
+            if added_count > 0:
+                self.save_to_disk()
+
+        add_log(f"PROXY: В пул добавлено {added_count} новых бесплатных прокси", "OK")
+        return added_count
+
 
 # Глобальный синглтон
 proxy_manager = ProxyManager()

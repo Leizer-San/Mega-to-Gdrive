@@ -266,8 +266,10 @@ http://1.2.3.4:3128" style="min-height:140px; font-size:12px;"></textarea>
         </div>
 
         <!-- Кнопки управления пулом -->
+        <button class="secondary btn-sm" style="width:100%; margin-bottom:8px; background:rgba(0,180,216,0.15); border-color:var(--cyan); color:var(--cyan); font-weight:600;" onclick="scrapeFreeProxies()">🌐 Найти бесплатные прокси</button>
+
         <div style="display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap;">
-          <button class="secondary btn-sm" style="flex:1" onclick="checkAllProxies()">🔄 Проверить все</button>
+          <button class="secondary btn-sm" style="flex:1" onclick="checkAllProxies()">🔄 Проверить</button>
           <button class="secondary btn-sm" style="flex:1" onclick="resetQuotaProxies()">♻️ Сброс квот</button>
           <button class="secondary btn-sm" style="flex:1" onclick="clearDeadProxies()">🗑️ Мёртвые</button>
         </div>
@@ -462,6 +464,25 @@ async function toggleAutoRotate(enabled) {
     headers: {"Content-Type": "application/json"},
     body: JSON.stringify({enabled})
   });
+}
+
+async function scrapeFreeProxies() {
+  const btn = event.target;
+  const oldText = btn.textContent;
+  btn.textContent = "⏳ Поиск прокси...";
+  btn.disabled = true;
+  try {
+    const r = await api("/api/proxies/scrape", {method: "POST"});
+    alert(r.message || "Поиск запущен");
+  } catch(e) {
+    alert("Ошибка запуска поиска: " + e);
+  } finally {
+    setTimeout(() => {
+      btn.textContent = oldText;
+      btn.disabled = false;
+      refresh();
+    }, 2500);
+  }
 }
 
 function renderProxies(pxState) {
