@@ -610,6 +610,61 @@ class ProxyManager:
         # Текущий не найден среди online (уже помечен) — берём первый
         return online[0]
 
+    # ── Поддержка нативного HTTP-клиента (requests) ──────────────────────────
+
+    @staticmethod
+    def build_requests_dict(proxy: dict | None) -> dict[str, str] | None:
+        """Сформировать словарь proxies для requests из объекта прокси."""
+        if not proxy:
+            return None
+        proto = (proxy.get("protocol") or "http").lower()
+        if proto in ("unknown", "https"):
+            proto = "http"
+        elif proto == "socks5":
+            proto = "socks5h"
+        elif proto == "socks4":
+            proto = "socks4a"
+
+        host = proxy["host"]
+        port = proxy["port"]
+        user = proxy.get("username")
+        pwd  = proxy.get("password")
+
+        if user and pwd:
+            auth = f"{urllib.parse.quote(user)}:{urllib.parse.quote(pwd)}@"
+        elif user:
+            auth = f"{urllib.parse.quote(user)}@"
+        else:
+            auth = ""
+
+        proxy_url = f"{proto}://{auth}{host}:{port}"
+        return {"http": proxy_url, "https": proxy_url}
+
+    def get_available_proxies(self) -> list[dict]:
+        """Получить список всех online-прокси."""
+        with self._lock:
+            return [dict(p) for p in self.proxies if p["status"] == "online"]
+
+    def mark_proxy_quota(self, proxy_id: str, error_msg: str = "Квота MEGA") -> None:
+        """Пометить прокси как исчерпавший квоту."""
+        with self._lock:
+            for p in self.proxies:
+                if p["id"] == proxy_id:
+                    p["status"] = "quota_exceeded"
+                    p["error"] = error_msg[:60]
+                    break
+            self.save_to_disk()
+
+    def mark_proxy_offline(self, proxy_id: str, error_msg: str = "Сбой соединения") -> None:
+        """Пометить прокси как недоступный."""
+        with self._lock:
+            for p in self.proxies:
+                if p["id"] == proxy_id:
+                    p["status"] = "offline"
+                    p["error"] = error_msg[:60]
+                    break
+            self.save_to_disk()
+
 
 # Глобальный синглтон
 proxy_manager = ProxyManager()

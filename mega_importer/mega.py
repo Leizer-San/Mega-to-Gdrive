@@ -56,202 +56,21 @@ def _get_quota_wait_hint(text: str) -> str:
 
 def mega_get(url: str, target_dir: Path, task_id: str | None = None) -> None:
     """
-    Скачать файл/папку по MEGA-ссылке в target_dir с помощью mega-get.
-
-    Особенности:
-    - Потоки stdout и stderr вычитываются параллельно в неблокирующую очередь
-    - Таймер зависания отслеживает сдвиг прогресса: если MEGA исчерпала квоту
-      и перестала передавать данные, процесс немедленно прерывается с ясным сообщением
-    - Прогресс в реальном времени транслируется в статус веб-интерфейса и таблицу задач
+    Скачать файл/папку по MEGA-ссылке в target_dir с помощью нативного загрузчика.
+    Поддерживает прямые Range-запросы, почанковую ротацию прокси и AES-128-CTR расшифровку.
     """
-    import queue
-    import threading
+    from .native_downloader import download_mega_url
 
     target_dir = Path(target_dir)
     target_dir.mkdir(parents=True, exist_ok=True)
 
-    cmd = ["mega-get", "--ignore-quota-warn", url, str(target_dir)]
     add_log(f"MEGA: начинаю скачивание {url}")
     update_state(message="MEGA: подключение к серверу и проверка файлов…")
 
-    process = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        errors="replace",
-        bufsize=1,
-    )
-
-    output_queue: queue.Queue = queue.Queue()
-    stderr_lines: list[str] = []
-    stdout_lines: list[str] = []
-
-    def _reader(pipe, stream_name: str):
-        try:
-            buf = []
-            while True:
-                char = pipe.read(1)
-                if not char:
-                    if buf:
-                        output_queue.put((stream_name, "".join(buf)))
-                    break
-                if char in ("\r", "\n"):
-                    if buf:
-                        output_queue.put((stream_name, "".join(buf)))
-                        buf = []
-                else:
-                    buf.append(char)
-        except Exception:
-            pass
-        finally:
-            try:
-                pipe.close()
-            except Exception:
-                pass
-
-    t_out = threading.Thread(target=_reader, args=(process.stdout, "stdout"), daemon=True)
-    t_err = threading.Thread(target=_reader, args=(process.stderr, "stderr"), daemon=True)
-    t_out.start()
-    t_err.start()
-
-    last_activity_time = time.time()
-    last_progress_change_time = time.time()
-    last_seen_progress = ""
-    last_ui_update_time = 0.0
-
-    while True:
-        if stop_event.is_set():
-            process.kill()
-            process.wait()
-            raise RuntimeError("Остановлено пользователем")
-
-        # Неблокирующее получение строки из очереди
-        try:
-            stream_name, raw_line = output_queue.get(timeout=0.5)
-            has_line = True
-        except queue.Empty:
-            has_line = False
-
-        now = time.time()
-
-        if has_line and raw_line:
-            clean = re.sub(r"[\x00-\x1F\x7F-\x9F]", "", raw_line.rstrip())
-            if clean:
-                last_activity_time = now
-
-                # 1. Проверяем явное сообщение о квоте
-                if _is_quota_line(clean):
-                    wait_hint = _get_quota_wait_hint(clean)
-                    process.kill()
-                    process.wait()
-                    raise RuntimeError(f"⚠️ Исчерпана квота MEGA{wait_hint} (требуется смена IP/прокси)")
-
-                line_upper = clean.upper()
-                is_progress = any(
-                    x in line_upper
-                    for x in ["TRANSFERRING", "PROCEEDING", "%", "B/S", "DOWNLOADED"]
-                )
-
-                if is_progress:
-                    pct_match = re.search(r"([\d.]+)\s*%", clean)
-                    pct = float(pct_match.group(1)) if pct_match else None
-                    match = re.search(r"\(([^)]+)\)", clean)
-                    bytes_match = re.search(r"(\d+(?:\.\d+)?\s*(?:[kKmMgGtT]?[bB])\s*/\s*\d+(?:\.\d+)?\s*(?:[kKmMgGtT]?[bB]))", clean)
-
-                    if match and ("%" in match.group(1) or "B" in match.group(1).upper()):
-                        prog_text = match.group(1).strip()
-                    elif bytes_match:
-                        prog_text = bytes_match.group(1).strip() + (f" ({pct:.1f}%)" if pct is not None else "")
-                    elif pct is not None:
-                        prog_text = f"{pct:.1f}%"
-                    else:
-                        prog_text = "Скачивание..."
-
-                    # Если изменились байты / проценты — сбрасываем таймер зависания
-                    if prog_text != last_seen_progress and prog_text != "Скачивание...":
-                        last_seen_progress = prog_text
-                        last_progress_change_time = now
-
-                    msg = f"MEGA: {prog_text}"
-
-                    if now - last_ui_update_time > 0.5:
-                        if pct is not None:
-                            update_state(message=msg, overall_progress=pct)
-                            if task_id:
-                                update_task(task_id, progress=pct)
-                        else:
-                            update_state(message=msg)
-                        last_ui_update_time = now
-                else:
-                    if stream_name == "stderr":
-                        stderr_lines.append(clean)
-                        add_log(clean, "MEGA-ERR")
-                    else:
-                        stdout_lines.append(clean)
-                        add_log(clean, "MEGA")
-
-        # Проверяем, завершился ли процесс
-        retcode = process.poll()
-        if retcode is not None and output_queue.empty():
-            break
-
-        # 2. Детекция скрытого исчерпания квоты / зависания:
-        # Извлекаем процент прогресса (например 99.30%)
-        pct_match = re.search(r"([\d.]+)\s*%", last_seen_progress)
-        pct = float(pct_match.group(1)) if pct_match else 0.0
-
-        # На финализации (>=85%) MEGAcmd выполняет расшифровку AES и проверку хешей,
-        # поэтому даём расширенный таймаут 240 сек (4 минуты).
-        freeze_threshold = 240 if pct >= 85.0 else 90
-
-        time_since_progress = now - last_progress_change_time
-        time_since_activity = now - last_activity_time
-
-        # Информируем пользователя о финализации
-        if pct >= 85.0 and time_since_progress > 6 and (now - last_ui_update_time > 2.0):
-            update_state(message=f"MEGA: {last_seen_progress} (расшифровка и финализация...)")
-            last_ui_update_time = now
-
-        if time_since_progress > freeze_threshold and time_since_activity > 15:
-            process.kill()
-            process.wait()
-            prog_info = f" на отметке [{last_seen_progress}]" if last_seen_progress else ""
-            raise RuntimeError(
-                f"⚠️ Исчерпана квота MEGA или зависло соединение{prog_info}: "
-                f"нет прогресса более {freeze_threshold} сек. Требуется смена IP/прокси."
-            )
-
-
-    rc = process.wait()
-    t_out.join(timeout=2)
-    t_err.join(timeout=2)
-
-    # ── Анализ результата ─────────────────────────────────────────────────────
-
-    files_downloaded = list(target_dir.rglob("*"))
-    actual_files = [f for f in files_downloaded if f.is_file()]
-
-    # Успех
-    if rc == 0 and actual_files:
-        return
-
-    # Ошибки
-    all_output = "\n".join(stderr_lines + stdout_lines)
-    if _is_quota_line(all_output):
-        wait_hint = _get_quota_wait_hint(all_output)
-        raise RuntimeError(f"⚠️ Исчерпана квота MEGA{wait_hint} (требуется смена IP/прокси)")
-
-
-    if rc != 0:
-        err_context = "\n".join(
-            stderr_lines[-10:] or stdout_lines[-10:]
-        ) or f"mega-get завершился с кодом {rc}"
-        raise RuntimeError(f"mega-get завершился с ошибкой (код {rc}):\n{err_context}")
-
-    if not actual_files:
+    downloaded = download_mega_url(url, target_dir, task_id=task_id)
+    if not downloaded:
         raise RuntimeError(
-            "mega-get завершился без ошибок, но файлы не были сохранены. "
+            "MEGA API завершил работу, но файлы не были сохранены. "
             "Проверьте доступность ссылки или квоту MEGA."
         )
 

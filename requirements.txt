@@ -6,3 +6,4 @@ werkzeug
 psutil
 requests[socks]
 PySocks
+pycryptodome
