@@ -287,6 +287,11 @@ class MegaApiClient:
                 attrs = decrypt_attr(base64_url_decode(a_field), node_key)
                 if attrs and "n" in attrs:
                     name = sanitize_filename(attrs["n"])
+            elif not node_key and a_field:
+                # Try decrypting with master key directly (for root folder node)
+                attrs = decrypt_attr(base64_url_decode(a_field), master_key)
+                if attrs and "n" in attrs:
+                    name = sanitize_filename(attrs["n"])
 
             node_map[h] = {
                 "handle": h,
@@ -294,19 +299,36 @@ class MegaApiClient:
                 "type": t,
                 "name": name,
                 "size": s,
-                "key": node_key,
+                "key": node_key or master_key,
             }
 
-            if t == 2:
-                folder_name = name
+        # 2. Determine root folder node of the share
+        all_handles = set(node_map.keys())
+        root_handle = None
+        for h, n in node_map.items():
+            if n["type"] == 2:
+                root_handle = h
+                break
+        if not root_handle:
+            # Find directory node whose parent is outside the share list
+            orphan_dirs = [h for h, n in node_map.items() if n["type"] == 1 and n["parent"] not in all_handles]
+            if orphan_dirs:
+                root_handle = orphan_dirs[0]
 
-        # 2. Build paths recursively
+        if root_handle and root_handle in node_map:
+            folder_name = node_map[root_handle]["name"]
+        else:
+            folder_name = f"folder_{folder_id}"
+
+        # 3. Build relative paths stopping at root_handle
         def get_rel_path(handle: str) -> str:
             parts = []
             curr = handle
             while curr and curr in node_map:
+                if curr == root_handle:
+                    break
                 n = node_map[curr]
-                if n["type"] == 2:  # root folder
+                if n["type"] == 2:
                     break
                 parts.append(n["name"])
                 curr = n["parent"]
