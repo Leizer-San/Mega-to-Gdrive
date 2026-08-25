@@ -14,23 +14,91 @@ import requests
 
 from .helpers import add_log
 
-# Curated high-yield proxy sources
+# Полный список 74+ проверенных источников прокси (на базе MDPR)
 PROXY_SOURCES = [
-    {"name": "TheSpeedX-HTTP", "url": "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt", "protocol": "http"},
-    {"name": "TheSpeedX-SOCKS5", "url": "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt", "protocol": "socks5"},
-    {"name": "monosans-HTTP", "url": "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt", "protocol": "http"},
-    {"name": "monosans-SOCKS5", "url": "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt", "protocol": "socks5"},
-    {"name": "ProxyScrape-HTTP", "url": "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=5000&country=all", "protocol": "http"},
-    {"name": "ProxyScrape-SOCKS5", "url": "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=5000&country=all", "protocol": "socks5"},
-    {"name": "ProxySpace-HTTP", "url": "https://proxyspace.pro/http.txt", "protocol": "http"},
-    {"name": "ProxySpace-SOCKS5", "url": "https://proxyspace.pro/socks5.txt", "protocol": "socks5"},
-    {"name": "OpenProxyList-HTTP", "url": "https://api.openproxylist.xyz/http.txt", "protocol": "http"},
-    {"name": "OpenProxyList-SOCKS5", "url": "https://api.openproxylist.xyz/socks5.txt", "protocol": "socks5"},
-    {"name": "hookzof-SOCKS5", "url": "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt", "protocol": "socks5"},
-    {"name": "roosterkid-SOCKS5", "url": "https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS5_RAW.txt", "protocol": "socks5"},
-    {"name": "roosterkid-HTTPS", "url": "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt", "protocol": "http"},
-    {"name": "prx-chk-HTTP", "url": "https://raw.githubusercontent.com/prx-chk/proxy-list/main/http.txt", "protocol": "http"},
-    {"name": "prx-chk-SOCKS5", "url": "https://raw.githubusercontent.com/prx-chk/proxy-list/main/socks5.txt", "protocol": "socks5"},
+    # --- HTML scraping ---
+    {"name": "free-proxy-list", "url": "https://free-proxy-list.net/", "protocol": "http"},
+    {"name": "sslproxies", "url": "https://www.sslproxies.org/", "protocol": "http"},
+    {"name": "us-proxy", "url": "https://www.us-proxy.org/", "protocol": "http"},
+    {"name": "free-proxy-list-anonymous", "url": "https://free-proxy-list.net/anonymous-proxy.html", "protocol": "http"},
+
+    # --- API plain text ---
+    {"name": "proxyscrape-http", "url": "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=10000&country=all", "protocol": "http"},
+    {"name": "proxy-list-download-http", "url": "https://www.proxy-list.download/api/v1/get?type=http", "protocol": "http"},
+    {"name": "openproxylist-http", "url": "https://api.openproxylist.xyz/http.txt", "protocol": "http"},
+    {"name": "proxyspace-http", "url": "https://proxyspace.pro/http.txt", "protocol": "http"},
+
+    # --- GitHub HTTP / HTTPS repositories ---
+    {"name": "thespeedx-http", "url": "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt", "protocol": "http"},
+    {"name": "monosans-http", "url": "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/http.txt", "protocol": "http"},
+    {"name": "clarketm-proxy-list", "url": "https://raw.githubusercontent.com/clarketm/proxy-list/master/proxy-list-raw.txt", "protocol": "http"},
+    {"name": "jetkai-http", "url": "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-http.txt", "protocol": "http"},
+    {"name": "mmpx12-http", "url": "https://raw.githubusercontent.com/mmpx12/proxy-list/master/http.txt", "protocol": "http"},
+    {"name": "proxifly-http", "url": "https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt", "protocol": "http"},
+    {"name": "gfpcom-http", "url": "https://raw.githubusercontent.com/gfpcom/free-proxy-list/main/proxies/http.txt", "protocol": "http"},
+    {"name": "vakhov-http", "url": "https://raw.githubusercontent.com/vakhov/fresh-proxy-list/master/http.txt", "protocol": "http"},
+    {"name": "proxygenerator1-http", "url": "https://raw.githubusercontent.com/proxygenerator1/ProxyGenerator/main/http_proxies.txt", "protocol": "http"},
+    {"name": "shiftytr-http", "url": "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/http.txt", "protocol": "http"},
+    {"name": "roosterkid-https", "url": "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt", "protocol": "http"},
+    {"name": "murongpig-http", "url": "https://raw.githubusercontent.com/MuRongPIG/Proxy-Master/main/http.txt", "protocol": "http"},
+    {"name": "zloi-user-http", "url": "https://raw.githubusercontent.com/zloi-user/hideip.me/master/http.txt", "protocol": "http"},
+    {"name": "b4rc0de-http", "url": "https://raw.githubusercontent.com/B4RC0DE-TM/proxy-list/main/HTTP.txt", "protocol": "http"},
+    {"name": "proxy4parsing-http", "url": "https://raw.githubusercontent.com/proxy4parsing/proxy-list/main/http.txt", "protocol": "http"},
+    {"name": "almroot-http", "url": "https://raw.githubusercontent.com/almroot/proxylist/master/list.txt", "protocol": "http"},
+    {"name": "spys-me-http", "url": "https://spys.me/proxy.txt", "protocol": "http"},
+    {"name": "fate0-proxylist", "url": "https://raw.githubusercontent.com/fate0/proxylist/master/proxy.list", "protocol": "http"},
+    {"name": "jetkai-https", "url": "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-https.txt", "protocol": "http"},
+    {"name": "shiftytr-https", "url": "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/https.txt", "protocol": "http"},
+    {"name": "mmpx12-https", "url": "https://raw.githubusercontent.com/mmpx12/proxy-list/master/https.txt", "protocol": "http"},
+    {"name": "vakhov-https", "url": "https://vakhov.github.io/fresh-proxy-list/https.txt", "protocol": "http"},
+    {"name": "vpslab-http-all", "url": "https://raw.githubusercontent.com/VPSLabCloud/VPSLab-Free-Proxy-List/main/http_all.txt", "protocol": "http"},
+    {"name": "vpslab-http-ssl", "url": "https://raw.githubusercontent.com/VPSLabCloud/VPSLab-Free-Proxy-List/main/http_ssl.txt", "protocol": "http"},
+    {"name": "vpslab-http-elite", "url": "https://raw.githubusercontent.com/VPSLabCloud/VPSLab-Free-Proxy-List/main/http_elite.txt", "protocol": "http"},
+    {"name": "vmheaven-http", "url": "https://raw.githubusercontent.com/vmheaven/VMHeaven-Free-Proxy-Updated/main/http.txt", "protocol": "http"},
+    {"name": "vmheaven-https", "url": "https://raw.githubusercontent.com/vmheaven/VMHeaven-Free-Proxy-Updated/main/https.txt", "protocol": "http"},
+    {"name": "komutan234-http", "url": "https://raw.githubusercontent.com/komutan234/Proxy-List-Free/main/proxies/http.txt", "protocol": "http"},
+    {"name": "rdavydov-http", "url": "https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies/http.txt", "protocol": "http"},
+    {"name": "zevtyardt-http", "url": "https://raw.githubusercontent.com/zevtyardt/proxy-list/main/http.txt", "protocol": "http"},
+    {"name": "kangproxy-http", "url": "https://raw.githubusercontent.com/officialputuid/KangProxy/master/http.txt", "protocol": "http"},
+    {"name": "thordata-http", "url": "https://raw.githubusercontent.com/Thordata/awesome-free-proxy-list/main/proxies/http.txt", "protocol": "http"},
+    {"name": "thordata-https", "url": "https://raw.githubusercontent.com/Thordata/awesome-free-proxy-list/main/proxies/https.txt", "protocol": "http"},
+    {"name": "zaeem20-http", "url": "https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/http.txt", "protocol": "http"},
+    {"name": "zaeem20-https", "url": "https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/https.txt", "protocol": "http"},
+    {"name": "ercindedeoglu-http", "url": "https://raw.githubusercontent.com/ErcinDedeoglu/proxies/main/http.txt", "protocol": "http"},
+    {"name": "yemixzy-http", "url": "https://raw.githubusercontent.com/yemixzy/proxy-list/main/proxies/http.txt", "protocol": "http"},
+    {"name": "proxygenerator1-stable-http", "url": "https://raw.githubusercontent.com/proxygenerator1/ProxyGenerator/main/Stable/http.txt", "protocol": "http"},
+    {"name": "prx-chk-http", "url": "https://raw.githubusercontent.com/prx-chk/proxy-list/main/http.txt", "protocol": "http"},
+
+    # --- JSON Mirrors ---
+    {"name": "proxyscrape-gh-http", "url": "https://raw.githubusercontent.com/proxyscrape/free-proxy-list/main/proxies/protocols/http/data.json", "protocol": "http"},
+    {"name": "proxyscrape-gh-socks5", "url": "https://raw.githubusercontent.com/proxyscrape/free-proxy-list/main/proxies/protocols/socks5/data.json", "protocol": "socks5"},
+    {"name": "proxyscrape-gh-socks4", "url": "https://raw.githubusercontent.com/proxyscrape/free-proxy-list/main/proxies/protocols/socks4/data.json", "protocol": "socks4"},
+
+    # --- SOCKS5 / SOCKS4 repositories ---
+    {"name": "thespeedx-socks5", "url": "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks5.txt", "protocol": "socks5"},
+    {"name": "monosans-socks5", "url": "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks5.txt", "protocol": "socks5"},
+    {"name": "hookzof-socks5", "url": "https://raw.githubusercontent.com/hookzof/socks5_list/master/proxy.txt", "protocol": "socks5"},
+    {"name": "shiftytr-socks5", "url": "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/socks5.txt", "protocol": "socks5"},
+    {"name": "jetkai-socks5", "url": "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks5.txt", "protocol": "socks5"},
+    {"name": "roosterkid-socks5", "url": "https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS5_RAW.txt", "protocol": "socks5"},
+    {"name": "mmpx12-socks5", "url": "https://raw.githubusercontent.com/mmpx12/proxy-list/master/socks5.txt", "protocol": "socks5"},
+    {"name": "vakhov-socks5", "url": "https://vakhov.github.io/fresh-proxy-list/socks5.txt", "protocol": "socks5"},
+    {"name": "zloi-user-socks5", "url": "https://raw.githubusercontent.com/zloi-user/hideip.me/main/socks5.txt", "protocol": "socks5"},
+    {"name": "rdavydov-socks5", "url": "https://raw.githubusercontent.com/rdavydov/proxy-list/main/proxies/socks5.txt", "protocol": "socks5"},
+    {"name": "zaeem20-socks5", "url": "https://raw.githubusercontent.com/Zaeem20/FREE_PROXIES_LIST/master/socks5.txt", "protocol": "socks5"},
+    {"name": "ercindedeoglu-socks5", "url": "https://raw.githubusercontent.com/ErcinDedeoglu/proxies/main/socks5.txt", "protocol": "socks5"},
+    {"name": "thordata-socks5", "url": "https://raw.githubusercontent.com/Thordata/awesome-free-proxy-list/main/proxies/socks5.txt", "protocol": "socks5"},
+    {"name": "yemixzy-socks5", "url": "https://raw.githubusercontent.com/yemixzy/proxy-list/main/proxies/socks5.txt", "protocol": "socks5"},
+    {"name": "proxifly-socks5", "url": "https://cdn.jsdelivr.net/gh/proxifly/free-proxy-list@main/proxies/protocols/socks5/data.txt", "protocol": "socks5"},
+    {"name": "prx-chk-socks5", "url": "https://raw.githubusercontent.com/prx-chk/proxy-list/main/socks5.txt", "protocol": "socks5"},
+    {"name": "proxyscrape-socks5", "url": "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=5000&country=all", "protocol": "socks5"},
+    {"name": "proxyspace-socks5", "url": "https://proxyspace.pro/socks5.txt", "protocol": "socks5"},
+    {"name": "openproxylist-socks5", "url": "https://api.openproxylist.xyz/socks5.txt", "protocol": "socks5"},
+    {"name": "thespeedx-socks4", "url": "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/socks4.txt", "protocol": "socks4"},
+    {"name": "monosans-socks4", "url": "https://raw.githubusercontent.com/monosans/proxy-list/main/proxies/socks4.txt", "protocol": "socks4"},
+    {"name": "shiftytr-socks4", "url": "https://raw.githubusercontent.com/ShiftyTR/Proxy-List/master/socks4.txt", "protocol": "socks4"},
+    {"name": "roosterkid-socks4", "url": "https://raw.githubusercontent.com/roosterkid/openproxylist/main/SOCKS4_RAW.txt", "protocol": "socks4"},
+    {"name": "jetkai-socks4", "url": "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies-socks4.txt", "protocol": "socks4"},
 ]
 
 IP_PORT_RE = re.compile(r"\b((?:[0-9]{1,3}\.){3}[0-9]{1,3}):([0-9]{2,5})\b")
@@ -38,13 +106,39 @@ MEGA_TEST_URL = "https://g.api.mega.co.nz/cs"
 
 
 def _fetch_source(source: dict) -> List[dict]:
-    """Fetch and parse ip:port lines from a single source."""
+    """Fetch and parse ip:port lines or JSON entries from a single source."""
     proto = source["protocol"]
     candidates = []
     try:
-        resp = requests.get(source["url"], timeout=8, headers={"User-Agent": "Mozilla/5.0"})
+        resp = requests.get(
+            source["url"],
+            timeout=8,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+        )
         if resp.status_code == 200:
-            for match in IP_PORT_RE.finditer(resp.text):
+            text = resp.text
+            # If JSON array of objects
+            if text.startswith("[") or text.startswith("{"):
+                try:
+                    data = json.loads(text)
+                    items = data if isinstance(data, list) else data.get("data", [])
+                    if isinstance(items, list):
+                        for item in items:
+                            if isinstance(item, dict):
+                                ip = item.get("ip") or item.get("host")
+                                port = item.get("port")
+                                if ip and port:
+                                    candidates.append({
+                                        "host": str(ip).strip(),
+                                        "port": int(port),
+                                        "protocol": proto,
+                                        "source": source["name"],
+                                    })
+                except Exception:
+                    pass
+
+            # Regex search for all standard IP:PORT matches in response text/HTML
+            for match in IP_PORT_RE.finditer(text):
                 host, port_str = match.group(1), match.group(2)
                 port = int(port_str)
                 if 1 <= port <= 65535:
@@ -68,7 +162,7 @@ def _test_proxy_mega(candidate: dict, timeout: float = 4.5) -> Optional[dict]:
     host = candidate["host"]
     port = candidate["port"]
 
-    scheme = "socks5h" if proto == "socks5" else "http"
+    scheme = "socks5h" if proto == "socks5" else "socks4a" if proto == "socks4" else "http"
     proxy_url = f"{scheme}://{host}:{port}"
     proxies = {"http": proxy_url, "https": proxy_url}
 
@@ -102,22 +196,22 @@ def _test_proxy_mega(candidate: dict, timeout: float = 4.5) -> Optional[dict]:
 
 
 def scrape_and_validate_proxies(
-    target_count: int = 30,
-    max_test_candidates: int = 400,
+    target_count: int = 50,
+    max_test_candidates: int = 800,
     progress_cb: Optional[Callable[[str], None]] = None,
 ) -> List[dict]:
     """
-    Fetch public proxies, deduplicate, and validate against MEGA API in parallel.
+    Fetch public proxies from 74+ sources, deduplicate, and validate against MEGA API in parallel.
     Stops as soon as target_count working proxies are found.
     """
     if progress_cb:
-        progress_cb("Сбор списков прокси из публичных источников...")
-    add_log("SCRAPER: Начинаю сбор бесплатных прокси из 15+ источников...", "INFO")
+        progress_cb("Сбор списков прокси из 74+ публичных источников...")
+    add_log(f"SCRAPER: Начинаю параллельный сбор прокси из {len(PROXY_SOURCES)} источников...", "INFO")
 
     raw_candidates: List[dict] = []
     seen = set()
 
-    with ThreadPoolExecutor(max_workers=10) as executor:
+    with ThreadPoolExecutor(max_workers=20) as executor:
         futures = [executor.submit(_fetch_source, s) for s in PROXY_SOURCES]
         for f in as_completed(futures):
             for c in f.result():
@@ -127,7 +221,7 @@ def scrape_and_validate_proxies(
                     raw_candidates.append(c)
 
     total_scraped = len(raw_candidates)
-    add_log(f"SCRAPER: Собрано {total_scraped} уникальных прокси. Запуск валидации к MEGA API...", "INFO")
+    add_log(f"SCRAPER: Собрано {total_scraped} уникальных прокси. Запуск быстрой валидации к MEGA API...", "INFO")
 
     if not raw_candidates:
         return []
@@ -139,7 +233,7 @@ def scrape_and_validate_proxies(
     if progress_cb:
         progress_cb(f"Проверка {len(test_pool)} прокси к MEGA API...")
 
-    with ThreadPoolExecutor(max_workers=35) as executor:
+    with ThreadPoolExecutor(max_workers=50) as executor:
         futures = {executor.submit(_test_proxy_mega, cand): cand for cand in test_pool}
         tested_count = 0
 
