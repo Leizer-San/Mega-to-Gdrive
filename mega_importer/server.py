@@ -86,12 +86,13 @@ def api_tasks():
             raise ValueError("Указанный ID не является папкой.")
         added = 0
         for t in tasks_data:
-            raw_url  = str(t.get("url",      "")).strip()
-            zip_mode = str(t.get("zip_mode", "none")).strip()
+            raw_url         = str(t.get("url",             "")).strip()
+            zip_mode        = str(t.get("zip_mode",        "none")).strip()
+            compress_images = bool(t.get("compress_images", False))
             sub_urls = [u.strip() for u in re.split(r"[\r\n;]+", raw_url) if u.strip()]
             for url in sub_urls:
                 if validate_mega_url(url):
-                    create_task(url, destination, zip_mode)
+                    create_task(url, destination, zip_mode=zip_mode, compress_images=compress_images)
                     added += 1
         return jsonify({"message": f"Добавлено задач: {added}"})
     except Exception as e:

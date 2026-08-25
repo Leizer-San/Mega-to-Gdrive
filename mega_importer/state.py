@@ -64,22 +64,28 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def create_task(url: str, destination_id: str, zip_mode: str = "none") -> str:
+def create_task(
+    url: str,
+    destination_id: str,
+    zip_mode: str = "none",
+    compress_images: bool = False,
+) -> str:
     """Создать новую задачу и добавить её в очередь. Возвращает task ID."""
     tid = uuid.uuid4().hex
     task = {
-        "id":             tid,
-        "url":            url,
-        "name":           url.split("/")[-1] if "/" in url else url,
-        "status":         "queued",
-        "progress":       0.0,
-        "bytes_total":    0,
-        "bytes_done":     0,
-        "destination_id": destination_id,
-        "zip_mode":       zip_mode,
-        "retries":        0,
-        "error":          None,
-        "created_at":     _now_iso(),
+        "id":              tid,
+        "url":             url,
+        "name":            url.split("/")[-1] if "/" in url else url,
+        "status":          "queued",
+        "progress":        0.0,
+        "bytes_total":     0,
+        "bytes_done":      0,
+        "destination_id":  destination_id,
+        "zip_mode":        zip_mode,
+        "compress_images": bool(compress_images),
+        "retries":         0,
+        "error":           None,
+        "created_at":      _now_iso(),
     }
     with lock:
         STATE["tasks"].append(task)

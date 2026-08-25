@@ -7,3 +7,4 @@ psutil
 requests[socks]
 PySocks
 pycryptodome
+Pillow

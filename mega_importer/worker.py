@@ -12,6 +12,7 @@ import traceback
 from .config import DOWNLOAD_DIR, MAX_RETRIES, RESERVE_BYTES
 from .drive import drive_about, ensure_drive_folder, upload_file
 from .helpers import add_log, format_bytes, update_state
+from .image_compressor import compress_images_in_directory
 from .mega import (
     all_files, apply_zip_mode, build_drive_tree,
     local_tree_stats, mega_get,
@@ -58,9 +59,10 @@ def process_task(task: dict) -> None:
     """
     Выполнить одну задачу импорта:
       1. Скачать из MEGA (с авторотацией прокси при квоте)
-      2. Применить zip_mode
-      3. Проверить квоту Drive
-      4. Загрузить все файлы на Drive
+      2. Сжать изображения (если включено)
+      3. Применить zip_mode
+      4. Проверить квоту Drive
+      5. Загрузить все файлы на Drive
     """
     tid = task["id"]
     url = task["url"]
@@ -89,6 +91,11 @@ def process_task(task: dict) -> None:
 
         # ── 1. Скачиваем из MEGA ─────────────────────────────────────────────
         mega_get(url, task_dir, task_id=tid)
+
+        # ── 1.5. Сжатие изображений ──────────────────────────────────────────
+        if task.get("compress_images"):
+            update_state(message="🖼️ Сжатие и оптимизация изображений...")
+            compress_images_in_directory(task_dir)
 
         # ── 2. ZIP-упаковка ──────────────────────────────────────────────────
         apply_zip_mode(task_dir, zip_mode)

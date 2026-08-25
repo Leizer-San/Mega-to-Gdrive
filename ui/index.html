@@ -139,6 +139,13 @@ pre#logs {
        <label><input type="radio" name="zipMode" value="subfolders"> 🗂 Каждую подпапку в отдельный .zip</label>
     </div>
 
+    <div class="checkbox-group" style="margin-bottom:12px; padding:8px 10px; background:rgba(0,180,216,0.08); border:1px solid rgba(0,180,216,0.2); border-radius:6px;">
+      <label style="display:flex; align-items:center; gap:8px; margin:0; cursor:pointer;">
+        <input type="checkbox" id="compressImages" style="width:16px; height:16px;">
+        <span style="font-size:13px; font-weight:500;">🖼️ Сжимать изображения (макс. 2160p, JPEG 92%, >1MB)</span>
+      </label>
+    </div>
+
     <div id="archiveApplyAllContainer" class="checkbox-group" style="margin-bottom:15px; display:none;">
       <label>
         <input type="checkbox" id="archiveApplyAll">
@@ -374,13 +381,14 @@ function processNextPendingUrl() {
 function confirmArchive() {
   let applyAll = $("archiveApplyAll").checked && pendingUrls.length > 1;
   let mode = document.querySelector('input[name="zipMode"]:checked').value;
+  let compress = Boolean($("compressImages").checked);
 
   let url = pendingUrls.shift();
-  currentTasksPayload.push({url: url, zip_mode: mode});
+  currentTasksPayload.push({url: url, zip_mode: mode, compress_images: compress});
 
   if(applyAll) {
      while(pendingUrls.length > 0) {
-         currentTasksPayload.push({url: pendingUrls.shift(), zip_mode: mode});
+         currentTasksPayload.push({url: pendingUrls.shift(), zip_mode: mode, compress_images: compress});
      }
   }
 
@@ -577,7 +585,7 @@ async function refresh(){
       return `
       <tr>
         <td class="small" style="max-width:220px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="${esc(t.name||t.url)}">
-          ${t.zip_mode !== 'none' ? '📦 ' : ''}${esc(t.name||t.url)}
+          ${t.compress_images ? '🖼️ ' : ''}${t.zip_mode !== 'none' ? '📦 ' : ''}${esc(t.name||t.url)}
         </td>
         <td class="${esc(t.status)}">${esc(t.status)}</td>
         <td>${progText}</td>
