@@ -145,6 +145,7 @@ class NativeFileDownloader:
         """
         Get (proxy_dict, requests_proxies).
         Uses direct connection first if available, otherwise cycles through available online proxies.
+        If direct IP hit quota and no proxies available, triggers auto-scraping.
         """
         available = proxy_manager.get_available_proxies()
         
@@ -158,8 +159,12 @@ class NativeFileDownloader:
         if not self._direct_quota_hit and not available:
             return None, None
 
+        # If direct hit quota and no proxies available, auto-scrape fresh proxies
         if not available:
-            return None, None
+            if proxy_manager.auto_rotate:
+                available = proxy_manager.ensure_working_proxies(min_count=2, target_count=35)
+            if not available:
+                return None, None
 
         with self._proxy_idx_lock:
             self._proxy_index = (self._proxy_index + 1) % len(available)
@@ -297,9 +302,13 @@ class NativeFileDownloader:
                         if proxy_info:
                             proxy_manager.mark_proxy_quota(proxy_info["id"], "Квота MEGA (HTTP 509)")
                             add_log(f"⚠️ Квота на прокси {proxy_name}. Ротация...", "WARNING")
+                            if not proxy_manager.get_available_proxies() and proxy_manager.auto_rotate:
+                                proxy_manager.ensure_working_proxies(min_count=2, target_count=35)
                         else:
                             self._direct_quota_hit = True
-                            add_log("⏳ Квота на прямом IP. Переключаюсь на прокси-пул...", "WARNING")
+                            add_log("⏳ Квота на прямом IP. Проверяю прокси-пул...", "WARNING")
+                            if proxy_manager.auto_rotate:
+                                proxy_manager.ensure_working_proxies(min_count=2, target_count=35)
                         time.sleep(1)
                         continue
 

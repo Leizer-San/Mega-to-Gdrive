@@ -326,6 +326,8 @@ class ProxyManager:
         self.auto_rotate: bool = True
         # Счётчик ротаций в рамках одной задачи — сбрасывается извне
         self._rotation_attempts: int = 0
+        self._scrape_lock = threading.Lock()
+        self._last_auto_scrape_time: float = 0.0
 
     # ── Персистентность ───────────────────────────────────────────────────────
 
@@ -696,6 +698,40 @@ class ProxyManager:
 
         add_log(f"PROXY: В пул добавлено {added_count} новых бесплатных прокси", "OK")
         return added_count
+
+    def ensure_working_proxies(self, min_count: int = 3, target_count: int = 35) -> list[dict]:
+        """
+        Гарантировать наличие доступных онлайн-прокси в пуле.
+        Если онлайн-прокси меньше min_count, автоматически запускает сбор из 74+ источников.
+        Потокобезопасно (выполняется только одним потоком одновременно).
+        """
+        available = self.get_available_proxies()
+        if len(available) >= min_count:
+            return available
+
+        with self._scrape_lock:
+            # Повторная проверка под блокировкой
+            available = self.get_available_proxies()
+            if len(available) >= min_count:
+                return available
+
+            now = time.time()
+            # Пробуем сбросить метки квот, если они есть
+            quota_proxies = [p for p in self.proxies if p["status"] == "quota_exceeded"]
+            if quota_proxies and (now - self._last_auto_scrape_time < 90):
+                add_log("♻️ Пробую повторно задействовать прокси из пула (сброс квот)...", "INFO")
+                self.reset_quota_marks()
+                available = self.get_available_proxies()
+                if len(available) >= min_count:
+                    return available
+
+            # Запускаем авто-сбор из источников
+            if now - self._last_auto_scrape_time > 30:
+                add_log("🌐 Авто-поиск: квота исчерпана, собираю свежие прокси из 74+ источников...", "WARNING")
+                self._last_auto_scrape_time = now
+                self.scrape_and_add_free_proxies(target_count=target_count)
+
+            return self.get_available_proxies()
 
 
 # Глобальный синглтон
