@@ -55,11 +55,68 @@ def _is_server_crash(text: str) -> bool:
             or "unable to connect to service" in t)
 
 
+def build_adaptive_batches(
+    items: list,
+    max_batch_size: int = 8 * 1024 * 1024 * 1024,
+) -> dict[str, list]:
+    """
+    Универсальное адаптивное разбиение элементов папки на порции по ~6-8 GB.
+    Работает с любой структурой каталогов, любой глубиной вложенности или плоским списком файлов.
+    """
+    dir_groups: dict[str, list] = {}
+    for it in items:
+        parent = "/".join(it.rel_path.split("/")[:-1]) if "/" in it.rel_path else "_root"
+        if parent not in dir_groups:
+            dir_groups[parent] = []
+        dir_groups[parent].append(it)
+
+    batches: dict[str, list] = {}
+    current_small_batch: list = []
+    current_small_size = 0
+    small_batch_idx = 1
+
+    for dir_path, dir_items in dir_groups.items():
+        dir_size = sum(it.file_size for it in dir_items)
+
+        if dir_size > max_batch_size:
+            part_idx = 1
+            cur_part_items = []
+            cur_part_size = 0
+            for it in dir_items:
+                if cur_part_items and (cur_part_size + it.file_size > max_batch_size):
+                    b_name = f"{dir_path} (часть {part_idx})" if dir_path != "_root" else f"Файлы (часть {part_idx})"
+                    batches[b_name] = cur_part_items
+                    part_idx += 1
+                    cur_part_items = []
+                    cur_part_size = 0
+                cur_part_items.append(it)
+                cur_part_size += it.file_size
+            if cur_part_items:
+                b_name = f"{dir_path} (часть {part_idx})" if dir_path != "_root" else f"Файлы (часть {part_idx})"
+                batches[b_name] = cur_part_items
+        elif dir_size >= max_batch_size * 0.35:
+            b_name = dir_path if dir_path != "_root" else "Основные файлы"
+            batches[b_name] = dir_items
+        else:
+            current_small_batch.extend(dir_items)
+            current_small_size += dir_size
+            if current_small_size >= max_batch_size * 0.7:
+                batches[f"Группа {small_batch_idx}"] = current_small_batch
+                small_batch_idx += 1
+                current_small_batch = []
+                current_small_size = 0
+
+    if current_small_batch:
+        batches[f"Группа {small_batch_idx}"] = current_small_batch
+
+    return batches
+
+
 def process_task(task: dict) -> None:
     """
     Выполнить задачу импорта:
-    - Для папок: поэтапная обработка по подпапкам с немедленной очисткой диска Colab
-      и персистентным сохранением прогресса на Google Drive.
+    - Для папок: универсальная адаптивная обработка порциями по ~6-8 GB
+      с немедленной очисткой диска Colab и персистентным сохранением прогресса на Google Drive.
     - Для файлов: прямое скачивание и загрузка.
     """
     from .mega_api import MegaApiClient, parse_mega_url
@@ -89,7 +146,7 @@ def process_task(task: dict) -> None:
 
         if link_type == "folder":
             # ══════════════════════════════════════════════════════════════════
-            # Поэтапная обработка папки (Phased / Segmented Processing)
+            # Поэтапная адаптивная обработка папки (Adaptive Batching)
             # ══════════════════════════════════════════════════════════════════
             update_state(current_task=tid, message="Получение структуры папки MEGA...")
             resolved_folder = api.resolve_folder(parsed["folder_id"], parsed["key"])
@@ -117,23 +174,32 @@ def process_task(task: dict) -> None:
                     f"свободно {format_bytes(quota['free'])}."
                 )
 
-            # Группировка элементов по сегментам (подпапкам)
-            batches: dict[str, list] = {}
-            for it in items:
-                parts = it.rel_path.split("/")
-                batch_key = parts[0] if len(parts) > 1 else "_root_files"
-                if batch_key not in batches:
-                    batches[batch_key] = []
-                batches[batch_key].append(it)
+            # Универсальная адаптивная группировка по ~6-8 GB
+            batches = build_adaptive_batches(items, max_batch_size=8 * 1024 * 1024 * 1024)
 
             completed_batches = set(task.get("completed_batches") or [])
             done_bytes_accumulated = int(task.get("bytes_done") or 0)
 
-            # Определение корневой папки на Google Drive
-            if zip_mode in ("subfolders", "none"):
-                root_drive_id = ensure_drive_folder(resolved_folder.folder_name, destination_id)
-            else:
-                root_drive_id = destination_id
+            # Корневая папка на Google Drive
+            root_drive_id = ensure_drive_folder(resolved_folder.folder_name, destination_id)
+
+            # Кэш соответствия относительных путей каталогов к ID на Google Диске
+            drive_folder_cache: dict[str, str] = {".": root_drive_id}
+
+            def get_drive_parent_id(rel_dir: Path) -> str:
+                s = str(rel_dir).replace("\\", "/")
+                if s in drive_folder_cache:
+                    return drive_folder_cache[s]
+                parts = rel_dir.parts
+                curr_id = root_drive_id
+                curr_path = Path(".")
+                for p in parts:
+                    curr_path = curr_path / p
+                    cp_str = str(curr_path).replace("\\", "/")
+                    if cp_str not in drive_folder_cache:
+                        drive_folder_cache[cp_str] = ensure_drive_folder(p, curr_id)
+                    curr_id = drive_folder_cache[cp_str]
+                return curr_id
 
             tracker = ProgressTracker(total_folder_bytes, task_id=tid)
             tracker.total_files = len(items)
@@ -148,14 +214,13 @@ def process_task(task: dict) -> None:
                     continue
 
                 batch_bytes = sum(it.file_size for it in batch_items)
-                display_name = resolved_folder.folder_name if batch_name == "_root_files" else batch_name
                 add_log(
-                    f"📦 Обработка сегмента [{batch_idx}/{len(batches)}]: «{display_name}» "
+                    f"📦 Обработка сегмента [{batch_idx}/{len(batches)}]: «{batch_name}» "
                     f"({len(batch_items)} файлов, {format_bytes(batch_bytes)})",
                     "INFO",
                 )
 
-                # 1. Скачиваем файлы ТОЛЬКО этого сегмента
+                # 1. Скачиваем файлы ТОЛЬКО этого сегмента в их исходные подпапки
                 update_task(tid, status="downloading")
                 folder_root = task_dir / resolved_folder.folder_name
                 folder_root.mkdir(parents=True, exist_ok=True)
@@ -170,58 +235,45 @@ def process_task(task: dict) -> None:
 
                 # 2. Сжатие изображений в сегменте (если включено)
                 if task.get("compress_images"):
-                    update_state(message=f"🖼️ Сжатие изображений в сегменте «{display_name}»...")
-                    target_comp_dir = folder_root / batch_name if batch_name != "_root_files" else folder_root
-                    compress_images_in_directory(target_comp_dir)
+                    update_state(message=f"🖼️ Сжатие изображений в сегменте «{batch_name}»...")
+                    # Сжимаем только родительские каталоги файлов этого сегмента
+                    touched_dirs = {
+                        (folder_root / it.rel_path).parent
+                        for it in batch_items
+                        if (folder_root / it.rel_path).parent.exists()
+                    }
+                    for td in touched_dirs:
+                        compress_images_in_directory(td)
 
-                # 3. ZIP-упаковка сегмента
+                # 3. Выгрузка файлов сегмента на Google Drive
                 update_task(tid, status="uploading")
-                upload_items: list[Path] = []
-                upload_parent_id = root_drive_id
-
-                if zip_mode == "subfolders" and batch_name != "_root_files":
-                    sub_dir = folder_root / batch_name
-                    if sub_dir.exists() and sub_dir.is_dir():
-                        zip_name = sanitize_filename(batch_name) + ".zip"
-                        tmp_zip = task_dir / zip_name
-                        zip_directory(sub_dir, tmp_zip)
-                        shutil.rmtree(sub_dir, ignore_errors=True)
-                        upload_items = [tmp_zip]
-                        upload_parent_id = root_drive_id
-                    else:
-                        upload_items = list(all_files(folder_root))
-                        upload_parent_id = root_drive_id
-                elif zip_mode == "root" and len(batches) == 1:
-                    zip_name = sanitize_filename(resolved_folder.folder_name) + ".zip"
-                    tmp_zip = task_dir / zip_name
-                    zip_directory(folder_root, tmp_zip)
-                    shutil.rmtree(folder_root, ignore_errors=True)
-                    upload_items = [tmp_zip]
-                    upload_parent_id = destination_id
-                else:
-                    if batch_name != "_root_files":
-                        sub_drive_id = ensure_drive_folder(batch_name, root_drive_id)
-                        sub_dir = folder_root / batch_name
-                        upload_parent_id = sub_drive_id
-                        upload_items = list(all_files(sub_dir)) if sub_dir.exists() else []
-                    else:
-                        upload_parent_id = root_drive_id
-                        upload_items = [p for p in folder_root.iterdir() if p.is_file()]
-
-                # 4. Выгрузка файлов сегмента на Google Drive
-                for idx, f_path in enumerate(upload_items, 1):
+                for idx, it in enumerate(batch_items, 1):
                     if stop_event.is_set():
                         raise RuntimeError("Остановлено пользователем")
 
-                    f_size = f_path.stat().st_size if f_path.exists() else 0
+                    # Файл на диске (мог стать .jpg после сжатия)
+                    f_path = folder_root / it.rel_path
+                    if not f_path.exists():
+                        # Проверяем, был ли конвертирован в .jpg
+                        jpg_alt = f_path.with_suffix(".jpg")
+                        if jpg_alt.exists():
+                            f_path = jpg_alt
+
+                    if not f_path.exists():
+                        continue
+
+                    f_size = f_path.stat().st_size
+                    rel_p = Path(it.rel_path)
+                    parent_drive_id = get_drive_parent_id(rel_p.parent)
+
                     update_state(
                         current_file=f_path.name,
-                        message=f"📤 Загрузка в Drive ({idx}/{len(upload_items)}): {f_path.name}...",
+                        message=f"📤 Загрузка в Drive ({idx}/{len(batch_items)}): {f_path.name}...",
                     )
-                    upload_file(f_path, upload_parent_id, tid, total_folder_bytes, done_bytes_accumulated)
+                    upload_file(f_path, parent_drive_id, tid, total_folder_bytes, done_bytes_accumulated)
                     done_bytes_accumulated += f_size
 
-                # 5. Сохраняем прогресс сегмента на Google Диске
+                # 4. Сохраняем прогресс сегмента на Google Диске
                 completed_batches.add(batch_name)
                 pct = (done_bytes_accumulated / total_folder_bytes * 100) if total_folder_bytes > 0 else 100.0
                 update_task(
@@ -231,13 +283,19 @@ def process_task(task: dict) -> None:
                     progress=min(100.0, round(pct, 1)),
                 )
 
-                # 6. МГНОВЕННАЯ ОЧИСТКА ДИСКА COLAB ПОСЛЕ ВЫГРУЗКИ СЕГМЕНТА
-                if batch_name != "_root_files":
-                    shutil.rmtree(folder_root / batch_name, ignore_errors=True)
-                for f_path in upload_items:
-                    f_path.unlink(missing_ok=True)
+                # 5. МГНОВЕННАЯ ОЧИСТКА ДИСКА COLAB ПОСЛЕ ВЫГРУЗКИ СЕГМЕНТА
+                for it in batch_items:
+                    (folder_root / it.rel_path).unlink(missing_ok=True)
+                    (folder_root / it.rel_path).with_suffix(".jpg").unlink(missing_ok=True)
 
-                add_log(f"✅ Сегмент «{display_name}» выгружен на Google Drive (диск Colab очищен)", "OK")
+                # Удаление пустых директорий
+                for d in sorted([p for p in folder_root.rglob("*") if p.is_dir()], key=lambda x: len(x.parts), reverse=True):
+                    try:
+                        d.rmdir()
+                    except OSError:
+                        pass
+
+                add_log(f"✅ Сегмент «{batch_name}» выгружен на Google Drive (диск Colab очищен)", "OK")
 
             # Завершение всей папки
             update_task(tid, status="done", progress=100, bytes_done=total_folder_bytes)
