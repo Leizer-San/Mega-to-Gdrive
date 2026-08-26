@@ -95,31 +95,32 @@ pre#logs {
 .proxy-meta{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);}
 .switch-container{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:var(--card-bg);border-radius:8px;border:1px solid var(--border);margin-bottom:12px;}
 
-/* Tree Explorer */
+/* Tree & Segment Explorer */
 .tree-container {
-  max-height: 240px;
+  max-height: 250px;
   overflow-y: auto;
   background: #060b14;
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 8px;
-  font-size: 12px;
+  font-size: 13px;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 .tree-node {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 3px 4px;
+  padding: 4px 6px;
   border-radius: 4px;
   cursor: pointer;
+  user-select: none;
 }
 .tree-node:hover {
-  background: rgba(255, 255, 255, 0.05);
+  background: rgba(255, 255, 255, 0.06);
 }
 .tree-children {
   margin-left: 18px;
-  border-left: 1px dashed rgba(255, 255, 255, 0.12);
+  border-left: 1px dashed rgba(255, 255, 255, 0.15);
   padding-left: 6px;
 }
 .tree-expander {
@@ -136,11 +137,54 @@ pre#logs {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
 }
 .tree-size {
   color: var(--muted);
   font-size: 11px;
   font-family: monospace;
+  margin-left: 6px;
+}
+
+.segment-list {
+  max-height: 250px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: #060b14;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+}
+.segment-card {
+  background: #0c1427;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.segment-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 600;
+  font-size: 12px;
+}
+.segment-files {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tab-btn.active-tab {
+  background: var(--accent) !important;
+  color: #fff !important;
 }
 
 @media(max-width:960px){
@@ -181,22 +225,29 @@ pre#logs {
     <div class="muted small" style="margin-bottom:5px">Ссылка:</div>
     <div id="archiveModalUrl" style="word-break:break-all; background:#090f1d; padding:10px; border:1px solid var(--border); border-radius:6px; font-family:monospace;" class="small"></div>
 
-    <!-- Секция выбора файлов папки -->
+    <!-- Секция выбора файлов папки и сегментов -->
     <div id="treeSection" style="margin: 12px 0; display:none; background: var(--card-bg); padding: 12px; border-radius: 8px; border: 1px solid var(--border);">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
-        <button type="button" id="inspectBtn" class="secondary btn-sm" onclick="inspectCurrentFolder()">🔍 Показать файлы и папки</button>
+        <button type="button" id="inspectBtn" class="secondary btn-sm" onclick="inspectCurrentFolder()">🔍 Показать файлы и сегменты</button>
         <span id="treeSummary" class="small muted" style="display:none;"></span>
       </div>
-      <div id="treeLoading" class="small muted pulsing" style="display:none; padding:8px 0;">⏳ Получение структуры файлов MEGA...</div>
+      <div id="treeLoading" class="small muted pulsing" style="display:none; padding:8px 0;">⏳ Получение структуры и расчет сегментов MEGA...</div>
       <div id="treeWrapper" style="display:none;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
           <div style="display:flex; gap:6px;">
-            <button type="button" class="secondary btn-sm" onclick="toggleAllTree(true)">Выбрать всё</button>
-            <button type="button" class="secondary btn-sm" onclick="toggleAllTree(false)">Снять всё</button>
+            <button type="button" id="tabTreeBtn" class="secondary btn-sm tab-btn active-tab" onclick="switchInspectTab('tree')">📁 Дерево файлов</button>
+            <button type="button" id="tabSegmentsBtn" class="secondary btn-sm tab-btn" onclick="switchInspectTab('segments')">📦 Сегменты (~6-8 GB)</button>
           </div>
           <span id="treeCountBadge" class="small muted"></span>
         </div>
+        
+        <div id="treeActionsBar" style="display:flex; gap:6px; margin-bottom:6px;">
+          <button type="button" class="secondary btn-sm" onclick="toggleAllTree(true)">Выбрать всё</button>
+          <button type="button" class="secondary btn-sm" onclick="toggleAllTree(false)">Снять всё</button>
+        </div>
+
         <div id="treeContainer" class="tree-container"></div>
+        <div id="segmentsContainer" class="segment-list" style="display:none;"></div>
       </div>
     </div>
 
@@ -430,6 +481,33 @@ function isFolderUrl(u) {
   return u && (u.includes("/folder/") || u.includes("#F!"));
 }
 
+function switchInspectTab(tab) {
+  const isTree = tab === 'tree';
+  $("tabTreeBtn").className = isTree ? 'secondary btn-sm tab-btn active-tab' : 'secondary btn-sm tab-btn';
+  $("tabSegmentsBtn").className = !isTree ? 'secondary btn-sm tab-btn active-tab' : 'secondary btn-sm tab-btn';
+  $("treeContainer").style.display = isTree ? 'block' : 'none';
+  $("treeActionsBar").style.display = isTree ? 'flex' : 'none';
+  $("segmentsContainer").style.display = !isTree ? 'flex' : 'none';
+}
+
+function renderSegmentsList(segments) {
+  if(!segments || segments.length === 0) {
+    return "<div class='small muted' style='padding:12px; text-align:center;'>Нет сегментов</div>";
+  }
+  return segments.map(s => `
+    <div class="segment-card">
+      <div class="segment-header">
+        <span style="color:var(--cyan);">📦 [Сегмент ${s.index}] ${esc(s.name)}</span>
+        <span class="small" style="font-family:monospace; color:var(--text);">${fmt(s.size||0)}</span>
+      </div>
+      <div class="segment-files">
+        <span style="color:var(--muted);">${s.count} файлов</span>
+        ${s.sample_files && s.sample_files.length ? ' • <span class="muted">' + esc(s.sample_files.join(', ')) + '</span>' : ''}
+      </div>
+    </div>
+  `).join('');
+}
+
 async function inspectCurrentFolder() {
   const url = pendingUrls[0];
   if(!url) return;
@@ -462,8 +540,10 @@ async function inspectCurrentFolder() {
     collectPaths(res.tree || []);
 
     $("treeContainer").innerHTML = renderTreeNodes(res.tree || []);
+    $("segmentsContainer").innerHTML = renderSegmentsList(res.segments || []);
     $("treeLoading").style.display = "none";
     $("treeWrapper").style.display = "block";
+    switchInspectTab('tree');
     updateTreeSummary();
   } catch(e) {
     $("treeLoading").style.display = "none";
@@ -481,10 +561,10 @@ function renderTreeNodes(nodes) {
 
     return `
       <div class="tree-item" data-path="${esc(n.path)}" data-type="${n.type}" data-size="${n.size||0}">
-        <div class="tree-node" onclick="onTreeNodeClick(event, '${esc(n.path)}')">
-          <span class="tree-expander" onclick="toggleExpander(event, this)">${hasChildren ? '▼' : '&nbsp;'}</span>
-          <input type="checkbox" class="tree-cb" ${checked} onchange="onTreeCheckboxChange(this, '${esc(n.path)}')">
-          <span>${icon}</span>
+        <div class="tree-node">
+          <span class="tree-expander">${hasChildren ? '▼' : '&nbsp;'}</span>
+          <input type="checkbox" class="tree-cb" ${checked}>
+          <span style="font-size:14px;">${icon}</span>
           <span class="tree-name" title="${esc(n.name)}">${esc(n.name)}</span>
           <span class="tree-size">${fmt(n.size||0)}</span>
         </div>
@@ -501,46 +581,6 @@ function getFileIcon(fname) {
   if(['mp4','mkv','webm','mov','avi'].includes(ext)) return '🎬';
   if(['mp3','flac','wav','m4a'].includes(ext)) return '🎵';
   return '📄';
-}
-
-function toggleExpander(e, el) {
-  e.stopPropagation();
-  const children = el.closest('.tree-item').querySelector('.tree-children');
-  if(!children) return;
-  if(children.style.display === 'none') {
-    children.style.display = 'block';
-    el.textContent = '▼';
-  } else {
-    children.style.display = 'none';
-    el.textContent = '▶';
-  }
-}
-
-function onTreeNodeClick(e, path) {
-  if(e.target.tagName === 'INPUT' || e.target.classList.contains('tree-expander')) return;
-  const cb = e.currentTarget.querySelector('.tree-cb');
-  if(cb) {
-    cb.checked = !cb.checked;
-    onTreeCheckboxChange(cb, path);
-  }
-}
-
-function onTreeCheckboxChange(cb, path) {
-  const isChecked = cb.checked;
-  const item = cb.closest('.tree-item');
-
-  const childCbs = item.querySelectorAll('.tree-children input[type="checkbox"]');
-  childCbs.forEach(c => {
-    c.checked = isChecked;
-    const p = c.closest('.tree-item').dataset.path;
-    if(isChecked) selectedPathsSet.add(p);
-    else selectedPathsSet.delete(p);
-  });
-
-  if(isChecked) selectedPathsSet.add(path);
-  else selectedPathsSet.delete(path);
-
-  updateTreeSummary();
 }
 
 function toggleAllTree(select) {
@@ -571,6 +611,55 @@ function updateTreeSummary() {
 
   $("treeCountBadge").textContent = `Выбрано: ${selFiles}/${totalFiles} (${fmt(selBytes)})`;
 }
+
+// Делегированный обработчик кликов по дереву файлов
+document.addEventListener("DOMContentLoaded", () => {
+  const treeCont = $("treeContainer");
+  if(treeCont) {
+    treeCont.addEventListener("click", function(e) {
+      const expander = e.target.closest(".tree-expander");
+      if (expander && expander.textContent.trim() !== "") {
+        e.stopPropagation();
+        const item = expander.closest(".tree-item");
+        const children = item.querySelector(".tree-children");
+        if (children) {
+          if (children.style.display === "none") {
+            children.style.display = "block";
+            expander.textContent = "▼";
+          } else {
+            children.style.display = "none";
+            expander.textContent = "▶";
+          }
+        }
+        return;
+      }
+
+      const node = e.target.closest(".tree-node");
+      if (!node) return;
+      const item = node.closest(".tree-item");
+      const path = item.dataset.path;
+      const cb = node.querySelector(".tree-cb");
+
+      if (e.target !== cb) {
+        cb.checked = !cb.checked;
+      }
+
+      const isChecked = cb.checked;
+      const childCbs = item.querySelectorAll(".tree-children input[type='checkbox']");
+      childCbs.forEach(c => {
+        c.checked = isChecked;
+        const p = c.closest(".tree-item").dataset.path;
+        if (isChecked) selectedPathsSet.add(p);
+        else selectedPathsSet.delete(p);
+      });
+
+      if (isChecked) selectedPathsSet.add(path);
+      else selectedPathsSet.delete(path);
+
+      updateTreeSummary();
+    });
+  }
+});
 
 function startAddFlow() {
   const urlsText = $("urls").value;

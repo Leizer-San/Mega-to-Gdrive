@@ -412,10 +412,24 @@ class MegaApiClient:
                 "path": it.rel_path,
             }
 
+        # Calculate adaptive segments (~6-8 GB batches)
+        from .worker import build_adaptive_batches
+        batches = build_adaptive_batches(resolved.items)
+        segments = []
+        for idx, (b_name, b_items) in enumerate(batches.items(), 1):
+            segments.append({
+                "index": idx,
+                "name": b_name,
+                "count": len(b_items),
+                "size": sum(it.file_size for it in b_items),
+                "sample_files": [it.file_name for it in b_items[:4]],
+            })
+
         return {
             "folder_name": resolved.folder_name,
             "total_bytes": resolved.total_bytes,
             "total_files": len(resolved.items),
             "tree": _dict_to_list(tree_dict),
+            "segments": segments,
         }
 
