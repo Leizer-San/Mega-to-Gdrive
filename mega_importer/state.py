@@ -38,13 +38,23 @@ def load_tasks_from_disk() -> None:
     if STATE_FILE.exists():
         try:
             with open(STATE_FILE, "r", encoding="utf-8") as f:
-                saved_tasks = json.load(f)
-            # Задачи в процессе выполнения при перезапуске ставим в очередь
+                data = json.load(f)
+            if isinstance(data, list):
+                saved_tasks = data
+            elif isinstance(data, dict):
+                saved_tasks = data.get("tasks", [])
+            else:
+                saved_tasks = []
+
+            cleaned_tasks = []
             for t in saved_tasks:
-                if t["status"] in ("downloading", "uploading"):
-                    t["status"] = "queued"
-            STATE["tasks"] = saved_tasks
-            print("✅ Очередь успешно восстановлена из Google Диска.")
+                if isinstance(t, dict):
+                    if t.get("status") in ("downloading", "uploading"):
+                        t["status"] = "queued"
+                    cleaned_tasks.append(t)
+
+            STATE["tasks"] = cleaned_tasks
+            print(f"✅ Очередь успешно восстановлена из Google Диска: {len(cleaned_tasks)} задач.")
         except Exception as e:
             print(f"⚠️ Ошибка чтения файла состояния: {e}")
 
@@ -117,7 +127,7 @@ def get_next_task() -> dict | None:
     """Вернуть следующую задачу со статусом queued/retry, или None."""
     with lock:
         for t in STATE["tasks"]:
-            if t["status"] in ("queued", "retry"):
+            if isinstance(t, dict) and t.get("status") in ("queued", "retry"):
                 return dict(t)
     return None
 

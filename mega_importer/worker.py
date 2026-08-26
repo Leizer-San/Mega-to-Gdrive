@@ -69,7 +69,8 @@ def process_task(task: dict) -> None:
         ProgressTracker,
         download_folder_batch_items,
     )
-    from .mega import sanitize_filename, zip_directory
+    from .helpers import sanitize_filename
+    from .mega import zip_directory
 
     tid            = task["id"]
     url            = task["url"]
@@ -329,7 +330,14 @@ def worker() -> None:
             if not task:
                 break
             update_state(current_task=task["id"])
-            process_task(task)
+            try:
+                process_task(task)
+            except Exception as task_exc:
+                add_log(f"Ошибка выполнения задачи {task.get('id')}: {task_exc}", "ERROR")
+                add_log(traceback.format_exc(), "TRACE")
+    except Exception as exc:
+        add_log(f"Критический сбой цикла воркера: {exc}", "ERROR")
+        add_log(traceback.format_exc(), "TRACE")
     finally:
         update_state(running=False, current_task=None, current_file=None)
         add_log("Очередь остановлена")
