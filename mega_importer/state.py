@@ -69,23 +69,27 @@ def create_task(
     destination_id: str,
     zip_mode: str = "none",
     compress_images: bool = False,
+    selected_paths: list[str] | None = None,
 ) -> str:
     """Создать новую задачу и добавить её в очередь. Возвращает task ID."""
     tid = uuid.uuid4().hex
     task = {
-        "id":              tid,
-        "url":             url,
-        "name":            url.split("/")[-1] if "/" in url else url,
-        "status":          "queued",
-        "progress":        0.0,
-        "bytes_total":     0,
-        "bytes_done":      0,
-        "destination_id":  destination_id,
-        "zip_mode":        zip_mode,
-        "compress_images": bool(compress_images),
-        "retries":         0,
-        "error":           None,
-        "created_at":      _now_iso(),
+        "id":                tid,
+        "url":               url,
+        "name":              url.split("/")[-1] if "/" in url else url,
+        "status":            "queued",
+        "progress":          0.0,
+        "bytes_total":       0,
+        "bytes_done":        0,
+        "destination_id":    destination_id,
+        "zip_mode":          zip_mode,
+        "compress_images":   bool(compress_images),
+        "selected_paths":    list(selected_paths) if selected_paths else [],
+        "completed_batches": [],
+        "completed_files":   [],
+        "retries":           0,
+        "error":             None,
+        "created_at":        _now_iso(),
     }
     with lock:
         STATE["tasks"].append(task)

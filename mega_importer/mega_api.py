@@ -361,3 +361,61 @@ class MegaApiClient:
             items=items,
             total_bytes=total_bytes,
         )
+
+    def inspect_folder_tree(self, folder_id: str, key_b64: str) -> dict:
+        """
+        Build a full hierarchical tree of a MEGA folder for UI exploration and item selection.
+        """
+        resolved = self.resolve_folder(folder_id, key_b64)
+
+        def _dict_to_list(d: dict) -> list:
+            nodes = []
+            for k, v in d.items():
+                if v["type"] == "folder":
+                    nodes.append({
+                        "name": v["name"],
+                        "type": "folder",
+                        "path": v["path"],
+                        "size": v["size"],
+                        "children": _dict_to_list(v["children"]),
+                    })
+                else:
+                    nodes.append({
+                        "name": v["name"],
+                        "type": "file",
+                        "path": v["path"],
+                        "size": v["size"],
+                    })
+            nodes.sort(key=lambda x: (0 if x["type"] == "folder" else 1, x["name"].lower()))
+            return nodes
+
+        tree_dict: dict = {}
+        for it in resolved.items:
+            parts = it.rel_path.split("/")
+            curr = tree_dict
+            for i, p in enumerate(parts[:-1]):
+                if p not in curr:
+                    curr[p] = {
+                        "type": "folder",
+                        "name": p,
+                        "children": {},
+                        "size": 0,
+                        "path": "/".join(parts[: i + 1]),
+                    }
+                curr[p]["size"] += it.file_size
+                curr = curr[p]["children"]
+            fname = parts[-1]
+            curr[fname] = {
+                "type": "file",
+                "name": fname,
+                "size": it.file_size,
+                "path": it.rel_path,
+            }
+
+        return {
+            "folder_name": resolved.folder_name,
+            "total_bytes": resolved.total_bytes,
+            "total_files": len(resolved.items),
+            "tree": _dict_to_list(tree_dict),
+        }
+

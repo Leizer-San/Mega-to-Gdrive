@@ -95,6 +95,54 @@ pre#logs {
 .proxy-meta{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--muted);}
 .switch-container{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:var(--card-bg);border-radius:8px;border:1px solid var(--border);margin-bottom:12px;}
 
+/* Tree Explorer */
+.tree-container {
+  max-height: 240px;
+  overflow-y: auto;
+  background: #060b14;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  font-size: 12px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+.tree-node {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.tree-node:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+.tree-children {
+  margin-left: 18px;
+  border-left: 1px dashed rgba(255, 255, 255, 0.12);
+  padding-left: 6px;
+}
+.tree-expander {
+  cursor: pointer;
+  user-select: none;
+  width: 14px;
+  display: inline-block;
+  text-align: center;
+  font-size: 10px;
+  color: var(--muted);
+}
+.tree-name {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.tree-size {
+  color: var(--muted);
+  font-size: 11px;
+  font-family: monospace;
+}
+
 @media(max-width:960px){
   .layout-container{grid-template-columns:1fr}
   .wrap{padding:14px}
@@ -132,6 +180,25 @@ pre#logs {
     </div>
     <div class="muted small" style="margin-bottom:5px">Ссылка:</div>
     <div id="archiveModalUrl" style="word-break:break-all; background:#090f1d; padding:10px; border:1px solid var(--border); border-radius:6px; font-family:monospace;" class="small"></div>
+
+    <!-- Секция выбора файлов папки -->
+    <div id="treeSection" style="margin: 12px 0; display:none; background: var(--card-bg); padding: 12px; border-radius: 8px; border: 1px solid var(--border);">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+        <button type="button" id="inspectBtn" class="secondary btn-sm" onclick="inspectCurrentFolder()">🔍 Показать файлы и папки</button>
+        <span id="treeSummary" class="small muted" style="display:none;"></span>
+      </div>
+      <div id="treeLoading" class="small muted pulsing" style="display:none; padding:8px 0;">⏳ Получение структуры файлов MEGA...</div>
+      <div id="treeWrapper" style="display:none;">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <div style="display:flex; gap:6px;">
+            <button type="button" class="secondary btn-sm" onclick="toggleAllTree(true)">Выбрать всё</button>
+            <button type="button" class="secondary btn-sm" onclick="toggleAllTree(false)">Снять всё</button>
+          </div>
+          <span id="treeCountBadge" class="small muted"></span>
+        </div>
+        <div id="treeContainer" class="tree-container"></div>
+      </div>
+    </div>
 
     <div class="radio-group">
        <label><input type="radio" name="zipMode" value="none" checked> 📄 Загружать файлы поштучно (как есть)</label>
@@ -354,6 +421,157 @@ function selectCurrentFolder() { $("destination").value = folderStack[folderStac
 let pendingUrls = [];
 let currentTasksPayload = [];
 
+let currentTreeData = null;
+let currentInspectedUrl = "";
+let selectedPathsSet = new Set();
+let allTreePaths = [];
+
+function isFolderUrl(u) {
+  return u && (u.includes("/folder/") || u.includes("#F!"));
+}
+
+async function inspectCurrentFolder() {
+  const url = pendingUrls[0];
+  if(!url) return;
+
+  $("treeLoading").style.display = "block";
+  $("inspectBtn").style.display = "none";
+  $("treeWrapper").style.display = "none";
+
+  try {
+    const res = await api("/api/inspect_folder", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({url})
+    });
+
+    if(res.error) throw new Error(res.error);
+
+    currentTreeData = res;
+    currentInspectedUrl = url;
+    allTreePaths = [];
+    selectedPathsSet.clear();
+
+    function collectPaths(nodes) {
+      for(let n of nodes) {
+        allTreePaths.push(n.path);
+        selectedPathsSet.add(n.path);
+        if(n.children) collectPaths(n.children);
+      }
+    }
+    collectPaths(res.tree || []);
+
+    $("treeContainer").innerHTML = renderTreeNodes(res.tree || []);
+    $("treeLoading").style.display = "none";
+    $("treeWrapper").style.display = "block";
+    updateTreeSummary();
+  } catch(e) {
+    $("treeLoading").style.display = "none";
+    $("inspectBtn").style.display = "inline-block";
+    alert("Ошибка загрузки структуры: " + e.message);
+  }
+}
+
+function renderTreeNodes(nodes) {
+  return nodes.map(n => {
+    const isFolder = n.type === 'folder';
+    const icon = isFolder ? '📁' : getFileIcon(n.name);
+    const hasChildren = isFolder && n.children && n.children.length > 0;
+    const checked = selectedPathsSet.has(n.path) ? 'checked' : '';
+
+    return `
+      <div class="tree-item" data-path="${esc(n.path)}" data-type="${n.type}" data-size="${n.size||0}">
+        <div class="tree-node" onclick="onTreeNodeClick(event, '${esc(n.path)}')">
+          <span class="tree-expander" onclick="toggleExpander(event, this)">${hasChildren ? '▼' : '&nbsp;'}</span>
+          <input type="checkbox" class="tree-cb" ${checked} onchange="onTreeCheckboxChange(this, '${esc(n.path)}')">
+          <span>${icon}</span>
+          <span class="tree-name" title="${esc(n.name)}">${esc(n.name)}</span>
+          <span class="tree-size">${fmt(n.size||0)}</span>
+        </div>
+        ${hasChildren ? `<div class="tree-children">${renderTreeNodes(n.children)}</div>` : ''}
+      </div>
+    `;
+  }).join('');
+}
+
+function getFileIcon(fname) {
+  const ext = (fname || '').split('.').pop().toLowerCase();
+  if(['png','jpg','jpeg','webp','bmp','gif'].includes(ext)) return '🖼️';
+  if(['zip','rar','7z','tar','gz'].includes(ext)) return '📦';
+  if(['mp4','mkv','webm','mov','avi'].includes(ext)) return '🎬';
+  if(['mp3','flac','wav','m4a'].includes(ext)) return '🎵';
+  return '📄';
+}
+
+function toggleExpander(e, el) {
+  e.stopPropagation();
+  const children = el.closest('.tree-item').querySelector('.tree-children');
+  if(!children) return;
+  if(children.style.display === 'none') {
+    children.style.display = 'block';
+    el.textContent = '▼';
+  } else {
+    children.style.display = 'none';
+    el.textContent = '▶';
+  }
+}
+
+function onTreeNodeClick(e, path) {
+  if(e.target.tagName === 'INPUT' || e.target.classList.contains('tree-expander')) return;
+  const cb = e.currentTarget.querySelector('.tree-cb');
+  if(cb) {
+    cb.checked = !cb.checked;
+    onTreeCheckboxChange(cb, path);
+  }
+}
+
+function onTreeCheckboxChange(cb, path) {
+  const isChecked = cb.checked;
+  const item = cb.closest('.tree-item');
+
+  const childCbs = item.querySelectorAll('.tree-children input[type="checkbox"]');
+  childCbs.forEach(c => {
+    c.checked = isChecked;
+    const p = c.closest('.tree-item').dataset.path;
+    if(isChecked) selectedPathsSet.add(p);
+    else selectedPathsSet.delete(p);
+  });
+
+  if(isChecked) selectedPathsSet.add(path);
+  else selectedPathsSet.delete(path);
+
+  updateTreeSummary();
+}
+
+function toggleAllTree(select) {
+  const cbs = document.querySelectorAll('#treeContainer input[type="checkbox"]');
+  cbs.forEach(c => c.checked = select);
+  if(select) {
+    allTreePaths.forEach(p => selectedPathsSet.add(p));
+  } else {
+    selectedPathsSet.clear();
+  }
+  updateTreeSummary();
+}
+
+function updateTreeSummary() {
+  if(!currentTreeData) return;
+  const totalFiles = currentTreeData.total_files || 0;
+
+  let selBytes = 0;
+  let selFiles = 0;
+
+  document.querySelectorAll('#treeContainer .tree-item[data-type="file"]').forEach(el => {
+    const cb = el.querySelector('input[type="checkbox"]');
+    if(cb && cb.checked) {
+      selFiles += 1;
+      selBytes += Number(el.dataset.size || 0);
+    }
+  });
+
+  $("treeCountBadge").textContent = `Выбрано: ${selFiles}/${totalFiles} (${fmt(selBytes)})`;
+}
+
 function startAddFlow() {
   const urlsText = $("urls").value;
   const urls = urlsText.split(/[\r\n;]+/).map(x => x.trim()).filter(Boolean);
@@ -373,6 +591,20 @@ function processNextPendingUrl() {
   $("archiveModalTitle").textContent = `Настройка ссылки (${currentTasksPayload.length + 1} из ${currentTasksPayload.length + pendingUrls.length})`;
   $("archiveModalUrl").textContent = url;
 
+  // Сброс дерева файлов
+  currentTreeData = null;
+  currentInspectedUrl = "";
+  selectedPathsSet.clear();
+  $("treeWrapper").style.display = "none";
+  $("treeLoading").style.display = "none";
+  $("inspectBtn").style.display = "inline-block";
+
+  if(isFolderUrl(url)) {
+    $("treeSection").style.display = "block";
+  } else {
+    $("treeSection").style.display = "none";
+  }
+
   $("archiveApplyAll").checked = false;
   $("archiveApplyAllContainer").style.display = pendingUrls.length > 1 ? "block" : "none";
   $("archiveModal").style.display = "block";
@@ -384,11 +616,36 @@ function confirmArchive() {
   let compress = Boolean($("compressImages").checked);
 
   let url = pendingUrls.shift();
-  currentTasksPayload.push({url: url, zip_mode: mode, compress_images: compress});
+
+  let selectedPaths = [];
+  if(currentTreeData && currentInspectedUrl === url) {
+    const checkedFiles = [];
+    document.querySelectorAll('#treeContainer .tree-item[data-type="file"]').forEach(el => {
+      const cb = el.querySelector('input[type="checkbox"]');
+      if(cb && cb.checked) {
+        checkedFiles.push(el.dataset.path);
+      }
+    });
+    if(checkedFiles.length < currentTreeData.total_files) {
+      selectedPaths = checkedFiles;
+    }
+  }
+
+  currentTasksPayload.push({
+    url: url,
+    zip_mode: mode,
+    compress_images: compress,
+    selected_paths: selectedPaths,
+  });
 
   if(applyAll) {
      while(pendingUrls.length > 0) {
-         currentTasksPayload.push({url: pendingUrls.shift(), zip_mode: mode, compress_images: compress});
+         currentTasksPayload.push({
+           url: pendingUrls.shift(),
+           zip_mode: mode,
+           compress_images: compress,
+           selected_paths: [],
+         });
      }
   }
 

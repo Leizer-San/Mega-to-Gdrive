@@ -89,14 +89,41 @@ def api_tasks():
             raw_url         = str(t.get("url",             "")).strip()
             zip_mode        = str(t.get("zip_mode",        "none")).strip()
             compress_images = bool(t.get("compress_images", False))
+            selected_paths  = t.get("selected_paths") or []
             sub_urls = [u.strip() for u in re.split(r"[\r\n;]+", raw_url) if u.strip()]
             for url in sub_urls:
                 if validate_mega_url(url):
-                    create_task(url, destination, zip_mode=zip_mode, compress_images=compress_images)
+                    create_task(
+                        url,
+                        destination,
+                        zip_mode=zip_mode,
+                        compress_images=compress_images,
+                        selected_paths=selected_paths,
+                    )
                     added += 1
         return jsonify({"message": f"Добавлено задач: {added}"})
     except Exception as e:
         return jsonify({"message": str(e)}), 400
+
+
+@app.post("/api/inspect_folder")
+def api_inspect_folder():
+    """Получить иерархическую структуру папки MEGA для предпросмотра и выбора файлов."""
+    from .mega_api import MegaApiClient, parse_mega_url
+    data = request.get_json(force=True) or {}
+    raw_url = str(data.get("url", "")).strip()
+    if not raw_url:
+        return jsonify({"error": "URL не указан"}), 400
+    try:
+        parsed = parse_mega_url(raw_url)
+        if parsed["type"] != "folder":
+            return jsonify({"error": "Ссылка не является папкой MEGA"}), 400
+        api_client = MegaApiClient()
+        res = api_client.inspect_folder_tree(parsed["folder_id"], parsed["key"])
+        return jsonify(res)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
 
 
 @app.post("/api/start")

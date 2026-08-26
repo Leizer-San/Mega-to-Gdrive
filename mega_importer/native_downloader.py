@@ -363,10 +363,70 @@ class NativeFileDownloader:
         raise RuntimeError(f"Не удалось скачать блок {start}-{end} после {MAX_CHUNK_RETRIES} попыток")
 
 
+def download_folder_batch_items(
+    items: List[ResolvedFolderItem],
+    folder_id: str,
+    folder_root: Path,
+    tracker: ProgressTracker,
+    api: Optional[MegaApiClient] = None,
+    concurrency: int = PARALLEL_FOLDER_WORKERS,
+) -> List[Path]:
+    """Download a specific list/batch of items belonging to a folder."""
+    if not items:
+        return []
+    if api is None:
+        api = MegaApiClient()
+    downloader = NativeFileDownloader(tracker, concurrency=2)
+    downloaded_files: List[Path] = []
+
+    def _download_single_item(item: ResolvedFolderItem) -> Path:
+        if stop_event.is_set():
+            raise RuntimeError("Остановлено пользователем")
+
+        for file_attempt in range(3):
+            try:
+                file_resolved = api.resolve_file(
+                    item.node_handle,
+                    item.key_b64,
+                    folder_id=folder_id,
+                )
+                out_p = folder_root / item.rel_path
+                return downloader.download_file(file_resolved, out_p, api=api)
+            except Exception as e:
+                if stop_event.is_set():
+                    raise
+                if file_attempt == 2:
+                    raise
+                time.sleep(1 + file_attempt)
+
+    workers_count = min(concurrency, max(2, len(items)))
+    with ThreadPoolExecutor(max_workers=workers_count) as executor:
+        futures = {
+            executor.submit(_download_single_item, item): item
+            for item in items
+        }
+
+        for future in as_completed(futures):
+            if stop_event.is_set():
+                executor.shutdown(wait=False, cancel_futures=True)
+                raise RuntimeError("Остановлено пользователем")
+
+            item = futures[future]
+            try:
+                res_p = future.result()
+                downloaded_files.append(res_p)
+            except Exception as e:
+                executor.shutdown(wait=False, cancel_futures=True)
+                raise RuntimeError(f"Ошибка скачивания файла {item.rel_path}: {e}") from e
+
+    return downloaded_files
+
+
 def download_mega_url(
     url: str,
     target_dir: Path,
     task_id: Optional[str] = None,
+    selected_paths: Optional[List[str]] = None,
 ) -> List[Path]:
     """
     High-level entry point to download any MEGA URL (File, Folder, Folder-Item).
@@ -412,64 +472,42 @@ def download_mega_url(
 
         add_log(f"📂 Получение структуры папки MEGA {folder_id}...", "INFO")
         resolved_folder = api.resolve_folder(folder_id, key_b64)
-        total_items = len(resolved_folder.items)
+
+        items_to_download = resolved_folder.items
+        if selected_paths:
+            items_to_download = [
+                it for it in resolved_folder.items
+                if any(it.rel_path == sp or it.rel_path.startswith(sp.rstrip("/") + "/") for sp in selected_paths)
+            ]
+            add_log(f"🔍 Применён фильтр выбора: {len(items_to_download)} из {len(resolved_folder.items)} файлов", "INFO")
+
+        total_bytes = sum(it.file_size for it in items_to_download)
+        total_items = len(items_to_download)
         add_log(
             f"📂 Папка: «{resolved_folder.folder_name}» ({total_items} файлов, "
-            f"{format_bytes(resolved_folder.total_bytes)})",
+            f"{format_bytes(total_bytes)})",
             "OK",
         )
 
         folder_root = target_dir / resolved_folder.folder_name
-        tracker = ProgressTracker(resolved_folder.total_bytes, task_id=task_id)
+        tracker = ProgressTracker(total_bytes, task_id=task_id)
         tracker.total_files = total_items
-        downloader = NativeFileDownloader(tracker, concurrency=2)
 
-        def _download_single_item(item: ResolvedFolderItem) -> Path:
-            if stop_event.is_set():
-                raise RuntimeError("Остановлено пользователем")
-
-            for file_attempt in range(3):
-                try:
-                    file_resolved = api.resolve_file(
-                        item.node_handle,
-                        item.key_b64,
-                        folder_id=folder_id,
-                    )
-                    out_p = folder_root / item.rel_path
-                    return downloader.download_file(file_resolved, out_p, api=api)
-                except Exception as e:
-                    if stop_event.is_set():
-                        raise
-                    if file_attempt == 2:
-                        raise
-                    time.sleep(1 + file_attempt)
-
-        # Parallel file downloading pool
         workers_count = min(PARALLEL_FOLDER_WORKERS, max(2, total_items))
         add_log(f"⚡ Параллельное скачивание: {workers_count} одновременных потоков", "INFO")
 
-        with ThreadPoolExecutor(max_workers=workers_count) as executor:
-            futures = {
-                executor.submit(_download_single_item, item): item
-                for item in resolved_folder.items
-            }
-
-            for future in as_completed(futures):
-                if stop_event.is_set():
-                    executor.shutdown(wait=False, cancel_futures=True)
-                    raise RuntimeError("Остановлено пользователем")
-
-                item = futures[future]
-                try:
-                    res_p = future.result()
-                    downloaded_files.append(res_p)
-                except Exception as e:
-                    executor.shutdown(wait=False, cancel_futures=True)
-                    raise RuntimeError(f"Ошибка скачивания файла {item.rel_path}: {e}") from e
+        downloaded_files = download_folder_batch_items(
+            items_to_download,
+            folder_id=folder_id,
+            folder_root=folder_root,
+            tracker=tracker,
+            api=api,
+            concurrency=workers_count,
+        )
 
         add_log(
             f"✅ Скачивание папки завершено: {len(downloaded_files)} файлов "
-            f"({format_bytes(resolved_folder.total_bytes)})",
+            f"({format_bytes(total_bytes)})",
             "OK",
         )
 
