@@ -16,29 +16,49 @@ def setup_tunnels(port: int) -> None:
     Запустить Cloudflare и Localtunnel в фоне,
     подождать их инициализации и вывести все доступные URL.
     """
-    print(f"Запускаю туннели (Cloudflare, Localtunnel). Подождите 7-10 секунд...")
+    print(f"Запускаю туннели (Cloudflare, Localtunnel). Подождите несколько секунд...")
 
     # ── Cloudflare ────────────────────────────────────────────────────────────
-    os.system(
-        "wget -q -c -nc "
-        "https://github.com/cloudflare/cloudflared/releases/latest/download/"
-        "cloudflared-linux-amd64"
-    )
-    os.system("chmod +x cloudflared-linux-amd64")
+    if not os.path.exists("cloudflared-linux-amd64"):
+        os.system(
+            "wget -q -c -nc "
+            "https://github.com/cloudflare/cloudflared/releases/latest/download/"
+            "cloudflared-linux-amd64"
+        )
+        os.system("chmod +x cloudflared-linux-amd64")
+
+    # Сброс старых процессов и логов
+    os.system("pkill -f cloudflared-linux-amd64 > /dev/null 2>&1")
+    os.system("pkill -f 'localtunnel' > /dev/null 2>&1")
+    for f in ("cloudflare.log", "lt.log"):
+        if os.path.exists(f):
+            try:
+                os.remove(f)
+            except Exception:
+                pass
+
     os.system(
         f"./cloudflared-linux-amd64 tunnel --url http://127.0.0.1:{port} "
         "> cloudflare.log 2>&1 &"
     )
 
     # ── Localtunnel ───────────────────────────────────────────────────────────
-    os.system("npm install -g localtunnel -q > /dev/null 2>&1")
-    os.system(f"lt --port {port} > lt.log 2>&1 &")
+    os.system(f"npx -y localtunnel --port {port} > lt.log 2>&1 &")
 
-    time.sleep(7)
+    # ── Динамическое ожидание URL (до 12 секунд) ──────────────────────────────
+    cf_url = "Не удалось получить URL"
+    lt_url = "Не удалось получить URL"
 
-    # ── Читаем результаты ─────────────────────────────────────────────────────
-    cf_url = _read_cloudflare_url()
-    lt_url, lt_pass = _read_localtunnel_url()
+    for _ in range(12):
+        time.sleep(1)
+        if cf_url == "Не удалось получить URL":
+            cf_url = _read_cloudflare_url()
+        if lt_url == "Не удалось получить URL":
+            lt_url, _ = _read_localtunnel_url()
+        if cf_url != "Не удалось получить URL" and lt_url != "Не удалось получить URL":
+            break
+
+    _, lt_pass = _read_localtunnel_url()
     colab_url = _read_colab_url(port)
 
     _print_urls(colab_url, cf_url, lt_url, lt_pass)
@@ -64,11 +84,16 @@ def _read_localtunnel_url() -> tuple[str, str]:
                 if "your url is:" in line:
                     lt_url = line.split("is: ")[1].strip()
                     break
+                elif "https://" in line and ".loca.lt" in line:
+                    for token in line.split():
+                        if "https://" in token and ".loca.lt" in token:
+                            lt_url = token.strip()
+                            break
     except Exception:
         pass
     try:
         lt_pass = (
-            urllib.request.urlopen("https://ipv4.icanhazip.com")
+            urllib.request.urlopen("https://ipv4.icanhazip.com", timeout=3)
             .read()
             .decode("utf8")
             .strip()
