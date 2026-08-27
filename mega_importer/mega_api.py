@@ -269,29 +269,38 @@ class MegaApiClient:
                 continue
 
             node_key = None
-            if k_field:
-                # k_field can be "owner:blob/owner:blob"
-                for part in k_field.split("/"):
-                    _, sep, blob = part.partition(":")
-                    if not sep or not blob:
-                        continue
-                    try:
-                        decrypted_k = decrypt_key(base64_to_a32(blob), master_key)
-                        node_key = decrypted_k
-                        break
-                    except Exception:
-                        continue
+            name = None
 
-            name = f"node_{h}"
-            if node_key and a_field:
-                attrs = decrypt_attr(base64_url_decode(a_field), node_key)
-                if attrs and "n" in attrs:
-                    name = sanitize_filename(attrs["n"])
-            elif not node_key and a_field:
-                # Try decrypting with master key directly (for root folder node)
-                attrs = decrypt_attr(base64_url_decode(a_field), master_key)
-                if attrs and "n" in attrs:
-                    name = sanitize_filename(attrs["n"])
+            if a_field:
+                a_bytes = base64_url_decode(a_field)
+
+                # 1. Проверяем все блоки ключей в поле 'k' (формат owner:blob/owner:blob)
+                if k_field:
+                    for part in k_field.split("/"):
+                        _, sep, blob = part.partition(":")
+                        candidate_blob = blob if (sep and blob) else part
+                        try:
+                            cand_k = decrypt_key(base64_to_a32(candidate_blob), master_key)
+                            attrs = decrypt_attr(a_bytes, cand_k)
+                            if attrs and "n" in attrs:
+                                node_key = cand_k
+                                name = sanitize_filename(attrs["n"])
+                                break
+                        except Exception:
+                            continue
+
+                # 2. Если имя не расшифровано по k_field, пробуем master_key напрямую (для корневого узла)
+                if not name:
+                    try:
+                        attrs = decrypt_attr(a_bytes, master_key)
+                        if attrs and "n" in attrs:
+                            node_key = master_key
+                            name = sanitize_filename(attrs["n"])
+                    except Exception:
+                        pass
+
+            if not name:
+                name = f"node_{h}"
 
             node_map[h] = {
                 "handle": h,
