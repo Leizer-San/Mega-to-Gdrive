@@ -248,31 +248,99 @@ def process_task(task: dict) -> None:
 
                 # 3. Выгрузка файлов сегмента на Google Drive
                 update_task(tid, status="uploading")
-                for idx, it in enumerate(batch_items, 1):
-                    if stop_event.is_set():
-                        raise RuntimeError("Остановлено пользователем")
 
-                    # Файл на диске (мог стать .jpg после сжатия)
-                    f_path = folder_root / it.rel_path
-                    if not f_path.exists():
-                        # Проверяем, был ли конвертирован в .jpg
-                        jpg_alt = f_path.with_suffix(".jpg")
-                        if jpg_alt.exists():
-                            f_path = jpg_alt
+                if zip_mode == "subfolders":
+                    # Упаковка каждой подпапки сегмента в отдельный .zip
+                    sub_dirs = [p for p in folder_root.iterdir() if p.is_dir()]
+                    for s_idx, s_dir in enumerate(sub_dirs, 1):
+                        if stop_event.is_set():
+                            raise RuntimeError("Остановлено пользователем")
 
-                    if not f_path.exists():
-                        continue
+                        # Если сегмент разбит на части (например, "Folder (часть 1)")
+                        if "часть" in batch_name and s_dir.name in batch_name:
+                            zip_name = sanitize_filename(batch_name) + ".zip"
+                        else:
+                            zip_name = sanitize_filename(s_dir.name) + ".zip"
 
-                    f_size = f_path.stat().st_size
-                    rel_p = Path(it.rel_path)
-                    parent_drive_id = get_drive_parent_id(rel_p.parent)
+                        tmp_zip = task_dir / zip_name
+                        update_state(message=f"📦 Упаковка подпапки ({s_idx}/{len(sub_dirs)}): {zip_name}...")
+                        zip_directory(s_dir, tmp_zip)
+                        shutil.rmtree(s_dir, ignore_errors=True)
 
+                        f_size = tmp_zip.stat().st_size
+                        update_state(
+                            current_file=zip_name,
+                            message=f"📤 Загрузка в Drive ({s_idx}/{len(sub_dirs)}): {zip_name} ({format_bytes(f_size)})...",
+                        )
+                        upload_file(tmp_zip, root_drive_id, tid, total_folder_bytes, done_bytes_accumulated)
+                        done_bytes_accumulated += f_size
+                        tmp_zip.unlink(missing_ok=True)
+
+                    # Файлы, находящиеся непосредственно в корне папки
+                    root_files = [p for p in folder_root.iterdir() if p.is_file()]
+                    for r_file in root_files:
+                        if stop_event.is_set():
+                            raise RuntimeError("Остановлено пользователем")
+                        f_size = r_file.stat().st_size
+                        update_state(
+                            current_file=r_file.name,
+                            message=f"📤 Загрузка в Drive: {r_file.name}...",
+                        )
+                        upload_file(r_file, root_drive_id, tid, total_folder_bytes, done_bytes_accumulated)
+                        done_bytes_accumulated += f_size
+                        r_file.unlink(missing_ok=True)
+
+                elif zip_mode == "root":
+                    # Упаковка всего сегмента в один .zip
+                    if len(batches) == 1:
+                        zip_name = sanitize_filename(resolved_folder.folder_name) + ".zip"
+                        upload_target_id = destination_id
+                    else:
+                        zip_name = sanitize_filename(f"{resolved_folder.folder_name} - {batch_name}") + ".zip"
+                        upload_target_id = root_drive_id
+
+                    tmp_zip = task_dir / zip_name
+                    update_state(message=f"📦 Упаковка архива {zip_name}...")
+                    zip_directory(folder_root, tmp_zip)
+                    shutil.rmtree(folder_root, ignore_errors=True)
+                    folder_root.mkdir(parents=True, exist_ok=True)
+
+                    f_size = tmp_zip.stat().st_size
                     update_state(
-                        current_file=f_path.name,
-                        message=f"📤 Загрузка в Drive ({idx}/{len(batch_items)}): {f_path.name}...",
+                        current_file=zip_name,
+                        message=f"📤 Загрузка в Drive архива {zip_name} ({format_bytes(f_size)})...",
                     )
-                    upload_file(f_path, parent_drive_id, tid, total_folder_bytes, done_bytes_accumulated)
+                    upload_file(tmp_zip, upload_target_id, tid, total_folder_bytes, done_bytes_accumulated)
                     done_bytes_accumulated += f_size
+                    tmp_zip.unlink(missing_ok=True)
+
+                else:
+                    # zip_mode == "none": поштучная загрузка с сохранением структуры папок
+                    for idx, it in enumerate(batch_items, 1):
+                        if stop_event.is_set():
+                            raise RuntimeError("Остановлено пользователем")
+
+                        # Файл на диске (мог стать .jpg после сжатия)
+                        f_path = folder_root / it.rel_path
+                        if not f_path.exists():
+                            # Проверяем, был ли конвертирован в .jpg
+                            jpg_alt = f_path.with_suffix(".jpg")
+                            if jpg_alt.exists():
+                                f_path = jpg_alt
+
+                        if not f_path.exists():
+                            continue
+
+                        f_size = f_path.stat().st_size
+                        rel_p = Path(it.rel_path)
+                        parent_drive_id = get_drive_parent_id(rel_p.parent)
+
+                        update_state(
+                            current_file=f_path.name,
+                            message=f"📤 Загрузка в Drive ({idx}/{len(batch_items)}): {f_path.name}...",
+                        )
+                        upload_file(f_path, parent_drive_id, tid, total_folder_bytes, done_bytes_accumulated)
+                        done_bytes_accumulated += f_size
 
                 # 4. Сохраняем прогресс сегмента на Google Диске
                 completed_batches.add(batch_name)
