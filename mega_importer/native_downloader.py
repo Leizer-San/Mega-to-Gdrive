@@ -93,6 +93,7 @@ class ProgressTracker:
         self.total_bytes = total_bytes
         self.task_id = task_id
         self.downloaded_bytes = 0
+        self.session_downloaded_bytes = 0
         self.completed_files = 0
         self.total_files = 1
         self.start_time = time.time()
@@ -102,13 +103,14 @@ class ProgressTracker:
     def add_bytes(self, num_bytes: int) -> None:
         with self._lock:
             self.downloaded_bytes += num_bytes
+            self.session_downloaded_bytes += num_bytes
             now = time.time()
             if now - self.last_update_time < 0.6:
                 return
             self.last_update_time = now
 
             elapsed = max(0.1, now - self.start_time)
-            speed = self.downloaded_bytes / elapsed
+            speed = self.session_downloaded_bytes / elapsed
             pct = (self.downloaded_bytes / self.total_bytes * 100) if self.total_bytes > 0 else 0
             pct = min(100.0, max(0.0, pct))
             speed_str = f"{format_bytes(int(speed))}/s"

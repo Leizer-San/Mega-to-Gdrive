@@ -181,6 +181,17 @@ def process_task(task: dict) -> None:
             completed_batches = set(task.get("completed_batches") or [])
             done_bytes_accumulated = int(task.get("bytes_done") or 0)
 
+            # Подсчет уже завершенных файлов и байтов из пропущенных сегментов
+            completed_files_count = 0
+            completed_bytes_count = 0
+            for b_name, b_items in batches.items():
+                if b_name in completed_batches:
+                    completed_files_count += len(b_items)
+                    completed_bytes_count += sum(it.file_size for it in b_items)
+
+            if done_bytes_accumulated < completed_bytes_count:
+                done_bytes_accumulated = completed_bytes_count
+
             # Корневая папка на Google Drive
             root_drive_id = ensure_drive_folder(resolved_folder.folder_name, destination_id)
 
@@ -204,6 +215,7 @@ def process_task(task: dict) -> None:
 
             tracker = ProgressTracker(total_folder_bytes, task_id=tid)
             tracker.total_files = len(items)
+            tracker.completed_files = completed_files_count
             tracker.downloaded_bytes = done_bytes_accumulated
 
             for batch_idx, (batch_name, batch_items) in enumerate(batches.items(), 1):
