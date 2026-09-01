@@ -12,8 +12,7 @@ from pathlib import Path
 from flask import Flask, jsonify, request, send_file
 
 from .drive import drive_about, validate_drive_folder, get_drive
-from .helpers import add_log
-from .mega import validate_mega_url
+from .helpers import add_log, is_supported_url
 from .proxy import proxy_manager
 from .state import (
     STATE, clear_finished_tasks, clear_all_tasks, create_task, get_tasks,
@@ -92,7 +91,7 @@ def api_tasks():
             selected_paths  = t.get("selected_paths") or []
             sub_urls = [u.strip() for u in re.split(r"[\r\n;]+", raw_url) if u.strip()]
             for url in sub_urls:
-                if validate_mega_url(url):
+                if is_supported_url(url):
                     create_task(
                         url,
                         destination,
@@ -108,19 +107,31 @@ def api_tasks():
 
 @app.post("/api/inspect_folder")
 def api_inspect_folder():
-    """Получить иерархическую структуру папки MEGA для предпросмотра и выбора файлов."""
-    from .mega_api import MegaApiClient, parse_mega_url
+    """Получить иерархическую структуру папки MEGA или списка Pixeldrain для предпросмотра."""
+    from .helpers import get_url_provider
     data = request.get_json(force=True) or {}
     raw_url = str(data.get("url", "")).strip()
     if not raw_url:
         return jsonify({"error": "URL не указан"}), 400
     try:
-        parsed = parse_mega_url(raw_url)
-        if parsed["type"] != "folder":
-            return jsonify({"error": "Ссылка не является папкой MEGA"}), 400
-        api_client = MegaApiClient()
-        res = api_client.inspect_folder_tree(parsed["folder_id"], parsed["key"])
-        return jsonify(res)
+        provider = get_url_provider(raw_url)
+        if provider == "mega":
+            from .mega_api import MegaApiClient, parse_mega_url
+            parsed = parse_mega_url(raw_url)
+            if parsed["type"] != "folder":
+                return jsonify({"error": "Ссылка не является папкой MEGA"}), 400
+            api_client = MegaApiClient()
+            res = api_client.inspect_folder_tree(parsed["folder_id"], parsed["key"])
+            return jsonify(res)
+        elif provider == "pixeldrain":
+            from .pixeldrain import parse_pixeldrain_url, inspect_pixeldrain_list
+            parsed = parse_pixeldrain_url(raw_url)
+            if parsed["type"] != "list":
+                return jsonify({"error": "Ссылка Pixeldrain не является списком (/l/)"}), 400
+            res = inspect_pixeldrain_list(raw_url)
+            return jsonify(res)
+        else:
+            return jsonify({"error": "Неподдерживаемый тип ссылки"}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 

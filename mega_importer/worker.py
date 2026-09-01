@@ -1,9 +1,10 @@
 """
 worker.py — Обработчик задач и управление очередью.
 
-process_task() выполняет полный цикл: скачать из MEGA → упаковать → залить на Drive.
-При исчерпании квоты или сбоях прокси автоматически переключает прокси и продолжает
-скачивание с места остановки (файлы на диске сохраняются при ошибке).
+process_task() выполняет полный цикл: скачать из MEGA / Pixeldrain → упаковать → залить на Drive.
+Поддерживает оба провайдера:
+  - MEGA: адаптивная батчевая загрузка ~6-8 GB с ротацией прокси.
+  - Pixeldrain: загрузка одиночных файлов и списков через Range-запросы с ротацией прокси.
 """
 from pathlib import Path
 import shutil
@@ -12,7 +13,7 @@ import traceback
 
 from .config import DOWNLOAD_DIR, MAX_RETRIES, RESERVE_BYTES
 from .drive import drive_about, ensure_drive_folder, upload_file
-from .helpers import add_log, format_bytes, update_state
+from .helpers import add_log, format_bytes, get_url_provider, update_state
 from .image_compressor import compress_images_in_directory
 from .mega import (
     all_files, apply_zip_mode, build_drive_tree,
@@ -138,6 +139,13 @@ def process_task(task: dict) -> None:
     task_dir       = DOWNLOAD_DIR / tid
     task_dir.mkdir(parents=True, exist_ok=True)
 
+    # ── Роутинг по провайдеру ─────────────────────────────────────────────────
+    provider = get_url_provider(url)
+    if provider == "pixeldrain":
+        _process_pixeldrain_task(task, task_dir)
+        return
+
+    # ── MEGA ──────────────────────────────────────────────────────────────────
     proxy_manager.reset_rotation_counter()
 
     try:
@@ -451,6 +459,295 @@ def process_task(task: dict) -> None:
         update_task(tid, status=next_status, retries=retries, error=err)
         update_state(error=err, message="Ошибка импорта")
         add_log(f"Критическая ошибка: {err}", "ERROR")
+        add_log(traceback.format_exc(), "TRACE")
+
+
+
+def _process_pixeldrain_task(task: dict, task_dir: Path) -> None:
+    """
+    Обработать задачу импорта для Pixeldrain.
+    Поддерживает одиночные файлы (/u/ID) и коллекции/списки (/l/ID).
+    Реализует полный пайплайн: скачать → сжать → упаковать → залить на Drive.
+    """
+    from .pixeldrain import (
+        parse_pixeldrain_url,
+        get_file_info,
+        get_list_info,
+        PixeldrainFile,
+        PixeldrainProgressTracker,
+        download_pixeldrain_file,
+        download_pixeldrain_list_items,
+        PD_PARALLEL_CHUNK_WORKERS,
+        PD_PARALLEL_FOLDER_WORKERS,
+    )
+    from .helpers import sanitize_filename
+    from .mega import zip_directory
+
+    tid            = task["id"]
+    url            = task["url"]
+    destination_id = task["destination_id"]
+    zip_mode       = task.get("zip_mode", "none")
+    selected_paths = task.get("selected_paths") or []  # для списков: выбранные file_id
+
+    try:
+        parsed = parse_pixeldrain_url(url)
+
+        # ══════════════════════════════════════════════════════════════════════
+        # ОДИНОЧНЫЙ ФАЙЛ Pixeldrain
+        # ══════════════════════════════════════════════════════════════════════
+        if parsed["type"] == "file":
+            file_id = parsed["id"]
+            update_task(tid, status="downloading", error=None)
+            update_state(current_task=tid, message="Получение информации о файле Pixeldrain...", error=None)
+
+            pd_file = get_file_info(file_id)
+            update_task(tid, name=pd_file.name, bytes_total=pd_file.size)
+            add_log(f"📥 Pixeldrain файл: «{pd_file.name}» ({format_bytes(pd_file.size)})", "INFO")
+
+            # Проверка квоты на Google Drive
+            quota = drive_about()
+            if quota["free"] is not None and pd_file.size + RESERVE_BYTES > quota["free"]:
+                raise RuntimeError(
+                    f"Недостаточно места на Google Диске: нужно {format_bytes(pd_file.size)}, "
+                    f"свободно {format_bytes(quota['free'])}."
+                )
+
+            tracker = PixeldrainProgressTracker(pd_file.size, task_id=tid)
+            out_path = task_dir / sanitize_filename(pd_file.name)
+            download_pixeldrain_file(pd_file, out_path, tracker, concurrency=PD_PARALLEL_CHUNK_WORKERS)
+            add_log(f"✅ Файл скачан: {pd_file.name} ({format_bytes(pd_file.size)})", "OK")
+
+            # Сжатие изображений
+            if task.get("compress_images"):
+                update_state(message="🖼️ Сжатие и оптимизация изображений...")
+                compress_images_in_directory(task_dir)
+
+            # ZIP-упаковка
+            if zip_mode == "root":
+                zip_name = sanitize_filename(pd_file.name) + ".zip"
+                tmp_zip = task_dir.parent / zip_name
+                update_state(message=f"📦 Упаковка в архив {zip_name}...")
+                zip_directory(task_dir, tmp_zip)
+                shutil.rmtree(task_dir, ignore_errors=True)
+                task_dir.mkdir(parents=True, exist_ok=True)
+                f_size = tmp_zip.stat().st_size
+                update_task(tid, status="uploading", bytes_total=f_size, bytes_done=0)
+                update_state(
+                    current_file=zip_name,
+                    message=f"📤 Загрузка в Drive: {zip_name} ({format_bytes(f_size)})...",
+                )
+                upload_file(tmp_zip, destination_id, tid, f_size, 0)
+                tmp_zip.unlink(missing_ok=True)
+            else:
+                update_task(tid, status="uploading", bytes_done=0)
+                f_size = out_path.stat().st_size if out_path.exists() else pd_file.size
+                update_state(
+                    current_file=pd_file.name,
+                    message=f"📤 Загрузка в Drive: {pd_file.name} ({format_bytes(f_size)})...",
+                )
+                upload_file(out_path, destination_id, tid, f_size, 0)
+
+            update_task(tid, status="done", progress=100, bytes_done=pd_file.size)
+            update_state(message="Импорт завершён", overall_progress=100, current_file=None)
+            add_log("Импорт файла Pixeldrain завершён успешно", "SUCCESS")
+            shutil.rmtree(task_dir, ignore_errors=True)
+
+        # ══════════════════════════════════════════════════════════════════════
+        # СПИСОК / КОЛЛЕКЦИЯ Pixeldrain
+        # ══════════════════════════════════════════════════════════════════════
+        elif parsed["type"] == "list":
+            list_id = parsed["id"]
+            update_state(current_task=tid, message="Получение информации о списке Pixeldrain...")
+            pd_list = get_list_info(list_id)
+
+            # Фильтрация выбранных файлов (selected_paths = список file_id)
+            items: list[PixeldrainFile] = pd_list.files
+            if selected_paths:
+                items = [f for f in pd_list.files if f.file_id in selected_paths]
+                add_log(
+                    f"🔍 Применён выбор: {len(items)} из {len(pd_list.files)} файлов",
+                    "INFO",
+                )
+
+            if not items:
+                raise RuntimeError("Не выбрано ни одного файла для скачивания.")
+
+            total_bytes = sum(f.size for f in items)
+            folder_name = sanitize_filename(pd_list.title)
+            update_task(tid, name=folder_name, bytes_total=total_bytes)
+            add_log(
+                f"📂 Pixeldrain список: «{pd_list.title}» ({len(items)} файлов, {format_bytes(total_bytes)})",
+                "INFO",
+            )
+
+            # Проверка квоты на Google Drive
+            quota = drive_about()
+            if quota["free"] is not None and total_bytes + RESERVE_BYTES > quota["free"]:
+                raise RuntimeError(
+                    f"Недостаточно места на Google Диске: нужно {format_bytes(total_bytes)}, "
+                    f"свободно {format_bytes(quota['free'])}."
+                )
+
+            # Адаптивная группировка по ~6-8 GB сегментам
+            class _FakeItem:
+                def __init__(self, f: "PixeldrainFile"):
+                    self.rel_path = f.file_id
+                    self.file_name = f.name
+                    self.file_size = f.size
+                    self._pd_file = f
+
+            fake_items = [_FakeItem(f) for f in items]
+            batches = build_adaptive_batches(fake_items, max_batch_size=8 * 1024 * 1024 * 1024)
+
+            completed_batches = set(task.get("completed_batches") or [])
+            done_bytes_accumulated = int(task.get("bytes_done") or 0)
+
+            # Корневая папка на Google Drive
+            root_drive_id = ensure_drive_folder(folder_name, destination_id)
+
+            tracker = PixeldrainProgressTracker(total_bytes, task_id=tid)
+            tracker.total_files = len(items)
+            tracker.downloaded_bytes = done_bytes_accumulated
+
+            folder_root = task_dir / folder_name
+            folder_root.mkdir(parents=True, exist_ok=True)
+
+            for batch_idx, (batch_name, batch_fake_items) in enumerate(batches.items(), 1):
+                if stop_event.is_set():
+                    raise RuntimeError("Остановлено пользователем")
+
+                if batch_name in completed_batches:
+                    add_log(f"⏩ Пропуск уже выгруженного сегмента: «{batch_name}»", "INFO")
+                    continue
+
+                batch_pd_files = [fi._pd_file for fi in batch_fake_items]
+                batch_bytes = sum(f.size for f in batch_pd_files)
+                add_log(
+                    f"📦 Обработка сегмента [{batch_idx}/{len(batches)}]: «{batch_name}» "
+                    f"({len(batch_pd_files)} файлов, {format_bytes(batch_bytes)})",
+                    "INFO",
+                )
+
+                # 1. Скачивание файлов сегмента
+                update_task(tid, status="downloading")
+                download_pixeldrain_list_items(
+                    batch_pd_files,
+                    folder_root,
+                    tracker,
+                    concurrency=PD_PARALLEL_FOLDER_WORKERS,
+                )
+
+                # 2. Сжатие изображений в сегменте
+                if task.get("compress_images"):
+                    update_state(message=f"🖼️ Сжатие изображений в сегменте «{batch_name}»...")
+                    compress_images_in_directory(folder_root)
+
+                # 3. Загрузка на Google Drive
+                update_task(tid, status="uploading")
+
+                if zip_mode == "subfolders":
+                    # Для плоских списков Pixeldrain «подпапок» нет — упаковываем всё в один .zip
+                    zip_name = sanitize_filename(f"{folder_name} - {batch_name}") + ".zip" if len(batches) > 1 else sanitize_filename(folder_name) + ".zip"
+                    tmp_zip = task_dir / zip_name
+                    update_state(message=f"📦 Упаковка сегмента {zip_name}...")
+                    zip_directory(folder_root, tmp_zip)
+                    shutil.rmtree(folder_root, ignore_errors=True)
+                    folder_root.mkdir(parents=True, exist_ok=True)
+                    f_size = tmp_zip.stat().st_size
+                    update_state(
+                        current_file=zip_name,
+                        message=f"📤 Загрузка в Drive: {zip_name} ({format_bytes(f_size)})...",
+                    )
+                    upload_file(tmp_zip, root_drive_id, tid, total_bytes, done_bytes_accumulated)
+                    done_bytes_accumulated += batch_bytes
+                    tmp_zip.unlink(missing_ok=True)
+
+                elif zip_mode == "root":
+                    zip_name = sanitize_filename(folder_name) + ".zip" if len(batches) == 1 else sanitize_filename(f"{folder_name} - {batch_name}") + ".zip"
+                    upload_target_id = destination_id if len(batches) == 1 else root_drive_id
+                    tmp_zip = task_dir / zip_name
+                    update_state(message=f"📦 Упаковка архива {zip_name}...")
+                    zip_directory(folder_root, tmp_zip)
+                    shutil.rmtree(folder_root, ignore_errors=True)
+                    folder_root.mkdir(parents=True, exist_ok=True)
+                    f_size = tmp_zip.stat().st_size
+                    update_state(
+                        current_file=zip_name,
+                        message=f"📤 Загрузка в Drive архива {zip_name} ({format_bytes(f_size)})...",
+                    )
+                    upload_file(tmp_zip, upload_target_id, tid, total_bytes, done_bytes_accumulated)
+                    done_bytes_accumulated += batch_bytes
+                    tmp_zip.unlink(missing_ok=True)
+
+                else:
+                    # zip_mode == "none": поштучная загрузка
+                    for idx, pd_file in enumerate(batch_pd_files, 1):
+                        if stop_event.is_set():
+                            raise RuntimeError("Остановлено пользователем")
+
+                        # Имя файла могло быть изменено при коллизии — ищем на диске
+                        f_path = folder_root / sanitize_filename(pd_file.name)
+                        if not f_path.exists():
+                            # Попробуем вариант с file_id в имени (при коллизии)
+                            stem = f_path.stem
+                            suffix = f_path.suffix
+                            alt = folder_root / f"{stem}_{pd_file.file_id}{suffix}"
+                            if alt.exists():
+                                f_path = alt
+                        # Проверяем .jpg-конвертацию
+                        if not f_path.exists():
+                            jpg_alt = f_path.with_suffix(".jpg")
+                            if jpg_alt.exists():
+                                f_path = jpg_alt
+                        if not f_path.exists():
+                            add_log(f"⚠️ Файл не найден на диске: {pd_file.name}", "WARNING")
+                            continue
+
+                        f_size = f_path.stat().st_size
+                        update_state(
+                            current_file=f_path.name,
+                            message=f"📤 Загрузка в Drive ({idx}/{len(batch_pd_files)}): {f_path.name}...",
+                        )
+                        upload_file(f_path, root_drive_id, tid, total_bytes, done_bytes_accumulated)
+                        done_bytes_accumulated += f_size
+
+                # 4. Сохраняем прогресс сегмента
+                completed_batches.add(batch_name)
+                pct = (done_bytes_accumulated / total_bytes * 100) if total_bytes > 0 else 100.0
+                update_task(
+                    tid,
+                    completed_batches=sorted(list(completed_batches)),
+                    bytes_done=done_bytes_accumulated,
+                    progress=min(100.0, round(pct, 1)),
+                )
+
+                # 5. Мгновенная очистка диска Colab после выгрузки сегмента
+                for pd_file in batch_pd_files:
+                    (folder_root / sanitize_filename(pd_file.name)).unlink(missing_ok=True)
+                    (folder_root / sanitize_filename(pd_file.name)).with_suffix(".jpg").unlink(missing_ok=True)
+
+                add_log(f"✅ Сегмент «{batch_name}» выгружен на Google Drive (диск Colab очищен)", "OK")
+
+            # Завершение
+            update_task(tid, status="done", progress=100, bytes_done=total_bytes)
+            update_state(message="Импорт завершён", overall_progress=100, current_file=None)
+            add_log("Импорт списка Pixeldrain завершён успешно", "SUCCESS")
+            shutil.rmtree(task_dir, ignore_errors=True)
+
+        else:
+            raise ValueError(f"Неизвестный тип Pixeldrain URL: {parsed['type']}")
+
+    except Exception as exc:
+        err = str(exc)
+        tid = task["id"]
+        retries = int(task.get("retries", 0)) + 1
+        next_status = (
+            "retry" if retries < MAX_RETRIES and not stop_event.is_set()
+            else "error"
+        )
+        update_task(tid, status=next_status, retries=retries, error=err)
+        update_state(error=err, message="Ошибка импорта Pixeldrain")
+        add_log(f"Критическая ошибка Pixeldrain: {err}", "ERROR")
         add_log(traceback.format_exc(), "TRACE")
 
 

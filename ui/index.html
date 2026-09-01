@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>MEGA → Google Drive</title>
+<title>MEGA & Pixeldrain → Google Drive</title>
 <style>
 :root{
   --bg:#0b1020;--panel:#121a2e;--panel2:#18213a;
@@ -258,7 +258,7 @@ pre#logs {
         <button type="button" id="inspectBtn" class="secondary btn-sm" onclick="inspectCurrentFolder()">🔍 Показать файлы и сегменты</button>
         <span id="treeSummary" class="small muted" style="display:none;"></span>
       </div>
-      <div id="treeLoading" class="small muted pulsing" style="display:none; padding:8px 0;">⏳ Получение структуры и расчет сегментов MEGA...</div>
+      <div id="treeLoading" class="small muted pulsing" style="display:none; padding:8px 0;">⏳ Получение структуры и расчёт сегментов...</div>
       <div id="treeWrapper" style="display:none;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
           <div style="display:flex; gap:6px;">
@@ -329,8 +329,8 @@ http://1.2.3.4:3128" style="min-height:140px; font-size:12px;"></textarea>
 </div>
 
 <div class="wrap">
-  <h1>MEGA → Google Drive</h1>
-  <div class="sub">Загрузка файлов напрямую в облако без использования локального трафика.</div>
+  <h1>MEGA & Pixeldrain → Google Drive</h1>
+  <div class="sub">Загрузка файлов из MEGA и Pixeldrain напрямую в облако без использования локального трафика.</div>
 
   <div class="layout-container">
     
@@ -357,7 +357,9 @@ http://1.2.3.4:3128" style="min-height:140px; font-size:12px;"></textarea>
           <input id="destination" placeholder="ID папки или root" value="root" style="flex:1">
           <button class="secondary" onclick="openFolderModal()">📁 Выбрать папку</button>
         </div>
-        <textarea id="urls" placeholder="Вставьте ссылки MEGA (по одной на строку или через ;) ..."></textarea>
+        <textarea id="urls" placeholder="Вставьте ссылки MEGA или Pixeldrain (по одной на строку или через ;)…
+MEGA: https://mega.nz/file/… или https://mega.nz/folder/…
+Pixeldrain: https://pixeldrain.com/u/ID или https://pixeldrain.com/l/ID"></textarea>
         <div class="row" style="margin-top:12px">
           <button onclick="startAddFlow()">➕ Добавить в очередь</button>
           <button class="secondary" onclick="startQueue()">▶ Запустить</button>
@@ -396,7 +398,7 @@ http://1.2.3.4:3128" style="min-height:140px; font-size:12px;"></textarea>
     <div class="sidebar-column">
       <div class="panel">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
-          <h3 style="margin:0; font-size:16px;">🌐 Прокси MEGA</h3>
+          <h3 style="margin:0; font-size:16px;">🌐 Прокси (MEGA & Pixeldrain)</h3>
           <button class="btn-sm" onclick="$('proxyModal').style.display='block'">➕ Добавить</button>
         </div>
 
@@ -505,7 +507,11 @@ let selectedPathsSet = new Set();
 let allTreePaths = [];
 
 function isFolderUrl(u) {
-  return u && (u.includes("/folder/") || u.includes("#F!"));
+  // MEGA папки
+  if (u && (u.includes("/folder/") || u.includes("#F!"))) return true;
+  // Pixeldrain списки/альбомы
+  if (u && /pixeldrain\.com\/(l|api\/list)\//i.test(u)) return true;
+  return false;
 }
 
 function switchInspectTab(tab) {

@@ -1,12 +1,13 @@
-# MEGA → Google Drive Importer
+# MEGA & Pixeldrain → Google Drive Importer
 
-Инструмент для импорта публичных MEGA-ссылок прямо в Google Drive через Google Colab — без использования вашего локального трафика.
+Инструмент для импорта публичных ссылок MEGA и Pixeldrain прямо в Google Drive через Google Colab — без использования вашего локального трафика.
 
 ## Возможности
 
-- Публичные `mega.nz/file/...` и `mega.nz/folder/...`
+- Публичные ссылки MEGA (`mega.nz/file/...` и `mega.nz/folder/...`)
+- Публичные файлы и коллекции Pixeldrain (`pixeldrain.com/u/...` и `pixeldrain.com/l/...`)
 - Очередь из нескольких ссылок
-- Сохранение структуры папок
+- Сохранение структуры папок и выбор отдельных файлов
 - Отображение квоты Google Drive
 - Предварительная проверка свободного места
 - Загрузка в Drive через resumable upload
@@ -14,6 +15,7 @@
 - Пропуск уже существующего файла (по имени + размеру)
 - Прогресс, скорость и логи в реальном времени
 - Кнопки запуска/остановки очереди
+- Автоматическая ротация пула прокси при исчерпании лимитов трафика
 - Три варианта веб-туннелей (Colab, Cloudflare, Localtunnel)
 - Сохранение очереди между сессиями (на Google Drive)
 - Навигатор по папкам Google Drive прямо в интерфейсе
@@ -30,6 +32,9 @@ mega-to-gdrive/
 │   ├── helpers.py                # Утилиты (логи, форматирование)
 │   ├── drive.py                  # Google Drive API
 │   ├── mega.py                   # MEGAcmd + ZIP-утилиты
+│   ├── mega_api.py               # Прямой MEGA HTTP API клиент
+│   ├── native_downloader.py      # Нативный параллельный загрузчик MEGA
+│   ├── pixeldrain.py             # Интеграция и загрузчик Pixeldrain
 │   ├── worker.py                 # Обработчик задач
 │   ├── server.py                 # Flask-сервер и API-маршруты
 │   └── tunnels.py                # Cloudflare / Localtunnel / Colab

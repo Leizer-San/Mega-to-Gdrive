@@ -44,3 +44,32 @@ def update_state(**kwargs) -> None:
 def sanitize_filename(name: str) -> str:
     """Убрать символы, недопустимые в именах файлов."""
     return re.sub(r'[\\/*?:"<>|]', "_", name)
+
+
+# ── Мультипровайдерная валидация URL ──────────────────────────────────────────
+
+_MEGA_URL_RE = re.compile(r"^https?://(?:www\.)?mega\.(?:nz|co\.nz)/", re.I)
+_PD_FILE_RE = re.compile(
+    r"^https?://(?:www\.)?pixeldrain\.com/(?:u|api/file)/([A-Za-z0-9_-]+)", re.I
+)
+_PD_LIST_RE = re.compile(
+    r"^https?://(?:www\.)?pixeldrain\.com/(?:l|api/list)/([A-Za-z0-9_-]+)", re.I
+)
+
+
+def get_url_provider(url: str) -> str | None:
+    """
+    Определить провайдера по URL.
+    Возвращает: 'mega' | 'pixeldrain' | None
+    """
+    u = url.strip()
+    if _MEGA_URL_RE.match(u):
+        return "mega"
+    if _PD_FILE_RE.match(u) or _PD_LIST_RE.match(u):
+        return "pixeldrain"
+    return None
+
+
+def is_supported_url(url: str) -> bool:
+    """True если URL является поддерживаемой ссылкой (MEGA или Pixeldrain)."""
+    return get_url_provider(url) is not None
