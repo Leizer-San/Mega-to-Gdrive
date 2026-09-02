@@ -77,6 +77,7 @@ def _build_aria2c_cmd(
         f"-s{connections}",              # разбить файл на N сегментов
         "-c",                            # продолжить прерванную загрузку
         "--auto-file-renaming=false",
+        "--file-allocation=none",        # НЕ делать pre-alloc — файл растёт вместе с прогрессом
         f"--connect-timeout={ARIA2_CONNECT_TIMEOUT}",
         f"--timeout={ARIA2_TIMEOUT}",
         "--retry-wait=15",               # 15 сек между попытками (временные ошибки CDN)
@@ -104,13 +105,25 @@ def download_with_aria2c(
 ) -> Path:
     """
     Скачать один файл Pixeldrain через aria2c.
-    Мониторит прогресс через размер файла на диске.
+    Мониторит прогресс через размер файла на диске (без pre-allocation).
     """
     url = f"https://pixeldrain.com/api/file/{file_id}"
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     cmd = _build_aria2c_cmd(url, output_path, api_key, connections, proxy)
     aria2_ctrl = output_path.with_suffix(output_path.suffix + ".aria2")
+
+    # Удаляем старый .aria2 файл прогресса и pre-allocated файл перед новым стартом
+    # (они могли остаться от предыдущего прерванного скачивания)
+    aria2_ctrl.unlink(missing_ok=True)
+    if output_path.exists() and output_path.stat().st_size == file_size:
+        # Файл уже полностью скачан — не перескачиваем
+        tracker.add_bytes(file_size)
+        tracker.file_finished()
+        return output_path
+    # Убираем неполный файл (может быть pre-allocated мусор от предыдущего запуска)
+    if output_path.exists():
+        output_path.unlink()
 
     try:
         process = subprocess.Popen(
@@ -120,11 +133,7 @@ def download_with_aria2c(
         )
 
         last_size = 0
-        # Для файлов, которые уже частично скачаны — учитываем начальный размер
-        initial_size = output_path.stat().st_size if output_path.exists() else 0
-        if initial_size > 0:
-            tracker.add_bytes(initial_size)
-            last_size = initial_size
+        last_progress_time = time.time()
 
         while process.poll() is None:
             if stop_event.is_set():
@@ -142,8 +151,9 @@ def download_with_aria2c(
                 if delta > 0:
                     tracker.add_bytes(delta)
                     last_size = current_size
+                    last_progress_time = time.time()
 
-            time.sleep(0.3)
+            time.sleep(0.5)
 
         rc = process.returncode
         if rc != 0:
