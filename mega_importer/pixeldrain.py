@@ -30,10 +30,10 @@ from .state import stop_event, update_task
 # ── URL паттерны ───────────────────────────────────────────────────────────────
 
 _PD_FILE_RE = re.compile(
-    r"^https?://(?:www\.)?pixeldrain\.com/(?:u|api/file)/([A-Za-z0-9_-]+)(?:/.*)?$", re.I
+    r"^https?://(?:www\.)?pixeldrain\.com/(?:u|api/file)/([A-Za-z0-9_-]+)(?:[/?#].*)?$", re.I
 )
 _PD_LIST_RE = re.compile(
-    r"^https?://(?:www\.)?pixeldrain\.com/(?:l|api/list)/([A-Za-z0-9_-]+)(?:/.*)?$", re.I
+    r"^https?://(?:www\.)?pixeldrain\.com/(?:l|api/list)/([A-Za-z0-9_-]+)(?:[/?#].*)?$", re.I
 )
 
 PIXELDRAIN_API = "https://pixeldrain.com/api"
@@ -124,6 +124,15 @@ def parse_pixeldrain_url(url: str) -> dict:
     m = _PD_FILE_RE.match(url)
     if m:
         return {"type": "file", "id": m.group(1)}
+    # Очистка от фрагментов (#...) и query-параметров (?...) если не совпало
+    clean = url.split("#")[0].split("?")[0].rstrip("/")
+    if clean != url:
+        m = _PD_LIST_RE.match(clean)
+        if m:
+            return {"type": "list", "id": m.group(1)}
+        m = _PD_FILE_RE.match(clean)
+        if m:
+            return {"type": "file", "id": m.group(1)}
     raise ValueError(f"Не удалось распознать Pixeldrain URL: {url}")
 
 
