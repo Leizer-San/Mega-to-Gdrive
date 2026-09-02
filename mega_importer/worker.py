@@ -488,6 +488,7 @@ def _process_pixeldrain_task(task: dict, task_dir: Path) -> None:
         PixeldrainProgressTracker,
         download_pixeldrain_file,
         download_pixeldrain_list_items,
+        get_pixeldrain_api_key,
         get_pixeldrain_chunk_workers,
         get_pixeldrain_concurrency,
     )
@@ -525,7 +526,22 @@ def _process_pixeldrain_task(task: dict, task_dir: Path) -> None:
 
             tracker = PixeldrainProgressTracker(pd_file.size, task_id=tid)
             out_path = task_dir / sanitize_filename(pd_file.name)
-            download_pixeldrain_file(pd_file, out_path, tracker, concurrency=get_pixeldrain_chunk_workers())
+
+            api_key = get_pixeldrain_api_key()
+            from .aria2_downloader import is_aria2c_available, download_with_aria2c
+            if api_key and is_aria2c_available():
+                add_log(f"🚀 Скачивание через aria2c (16 потоков, Premium)", "INFO")
+                download_with_aria2c(
+                    file_id=pd_file.file_id,
+                    file_name=pd_file.name,
+                    file_size=pd_file.size,
+                    output_path=out_path,
+                    api_key=api_key,
+                    tracker=tracker,
+                    connections=16,
+                )
+            else:
+                download_pixeldrain_file(pd_file, out_path, tracker, concurrency=get_pixeldrain_chunk_workers())
             add_log(f"✅ Файл скачан: {pd_file.name} ({format_bytes(pd_file.size)})", "OK")
 
             # Сжатие изображений
@@ -641,12 +657,38 @@ def _process_pixeldrain_task(task: dict, task_dir: Path) -> None:
 
                 # 1. Скачивание файлов сегмента
                 update_task(tid, status="downloading")
-                download_pixeldrain_list_items(
-                    batch_pd_files,
-                    folder_root,
-                    tracker,
-                    concurrency=get_pixeldrain_concurrency(),
-                )
+
+                api_key = get_pixeldrain_api_key()
+                from .aria2_downloader import is_aria2c_available, download_pixeldrain_list_aria2c, ARIA2_CONNECTIONS_PER_FILE
+                if api_key and is_aria2c_available():
+                    # Premium + aria2c: каждый файл качается в 16 соединений,
+                    # 5 файлов параллельно = 80 потоков нативного кода C
+                    concurrency_files = min(get_pixeldrain_concurrency(), 8)
+                    add_log(
+                        f"🚀 aria2c режим: {concurrency_files} файлов × {ARIA2_CONNECTIONS_PER_FILE} соединений",
+                        "INFO",
+                    )
+                    downloaded_paths, skipped = download_pixeldrain_list_aria2c(
+                        batch_pd_files,
+                        folder_root,
+                        tracker,
+                        api_key=api_key,
+                        concurrency=concurrency_files,
+                        connections_per_file=ARIA2_CONNECTIONS_PER_FILE,
+                    )
+                    if skipped:
+                        add_log(
+                            f"ℹ️ Пропущено {len(skipped)} файлов (ошибка aria2c). "
+                            f"Успешно: {len(downloaded_paths)}.",
+                            "INFO",
+                        )
+                else:
+                    download_pixeldrain_list_items(
+                        batch_pd_files,
+                        folder_root,
+                        tracker,
+                        concurrency=get_pixeldrain_concurrency(),
+                    )
 
                 # 2. Сжатие изображений в сегменте
                 if task.get("compress_images"):
