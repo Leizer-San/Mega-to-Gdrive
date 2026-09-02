@@ -16,6 +16,8 @@ STATE_FILE     = PERSISTENT_DIR / "state.json"
 PROXIES_FILE   = PERSISTENT_DIR / "proxies.json"
 
 # ── Параметры загрузки ────────────────────────────────────────────────────────
-RESERVE_BYTES = 5   * 1024 ** 3   # 5 GB — резерв свободного места на Drive
-UPLOAD_CHUNK  = 100 * 1024 ** 2   # 100 MB — размер чанка resumable-upload
-MAX_RETRIES   = 3                  # Максимальное количество повторных попыток
+RESERVE_BYTES      = 5   * 1024 ** 3   # 5 GB — резерв свободного места на Drive
+UPLOAD_CHUNK       = 100 * 1024 ** 2   # 100 MB — размер чанка resumable-upload
+MAX_RETRIES        = 3                  # Максимальное количество повторных попыток
+DEFAULT_BATCH_SIZE = int(3.5 * 1024 ** 3)  # 3.5 GB — адаптивный сегмент (наполнение ~2.5 - 3.5 GB)
+

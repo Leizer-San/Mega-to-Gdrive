@@ -421,7 +421,7 @@ class MegaApiClient:
                 "path": it.rel_path,
             }
 
-        # Calculate adaptive segments (~6-8 GB batches)
+        # Calculate adaptive segments (~2.5-3.5 GB batches)
         from .worker import build_adaptive_batches
         batches = build_adaptive_batches(resolved.items)
         segments = []

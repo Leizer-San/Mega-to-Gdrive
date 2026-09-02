@@ -3,7 +3,7 @@ worker.py — Обработчик задач и управление очере
 
 process_task() выполняет полный цикл: скачать из MEGA / Pixeldrain → упаковать → залить на Drive.
 Поддерживает оба провайдера:
-  - MEGA: адаптивная батчевая загрузка ~6-8 GB с ротацией прокси.
+  - MEGA: адаптивная батчевая загрузка ~2.5-3.5 GB с ротацией прокси.
   - Pixeldrain: загрузка одиночных файлов и списков через Range-запросы с ротацией прокси.
 """
 from pathlib import Path
@@ -11,7 +11,12 @@ import shutil
 import time
 import traceback
 
-from .config import DOWNLOAD_DIR, MAX_RETRIES, RESERVE_BYTES
+from .config import (
+    DEFAULT_BATCH_SIZE,
+    DOWNLOAD_DIR,
+    MAX_RETRIES,
+    RESERVE_BYTES,
+)
 from .drive import drive_about, ensure_drive_folder, upload_file
 from .helpers import add_log, format_bytes, get_url_provider, update_state
 from .image_compressor import compress_images_in_directory
@@ -59,10 +64,10 @@ def _is_server_crash(text: str) -> bool:
 
 def build_adaptive_batches(
     items: list,
-    max_batch_size: int = 8 * 1024 * 1024 * 1024,
+    max_batch_size: int = DEFAULT_BATCH_SIZE,
 ) -> dict[str, list]:
     """
-    Универсальное адаптивное разбиение элементов папки на порции по ~6-8 GB.
+    Универсальное адаптивное разбиение элементов папки на порции по ~2.5-3.5 GB.
     Работает с любой структурой каталогов, любой глубиной вложенности или плоским списком файлов.
     """
     dir_groups: dict[str, list] = {}
@@ -96,10 +101,16 @@ def build_adaptive_batches(
             if cur_part_items:
                 b_name = f"{dir_path} (часть {part_idx})" if dir_path != "_root" else f"Файлы (часть {part_idx})"
                 batches[b_name] = cur_part_items
-        elif dir_size >= max_batch_size * 0.35:
+        elif dir_size >= max_batch_size * 0.7:
             b_name = dir_path if dir_path != "_root" else "Основные файлы"
             batches[b_name] = dir_items
         else:
+            if current_small_batch and (current_small_size + dir_size > max_batch_size):
+                batches[f"Группа {small_batch_idx}"] = current_small_batch
+                small_batch_idx += 1
+                current_small_batch = []
+                current_small_size = 0
+
             current_small_batch.extend(dir_items)
             current_small_size += dir_size
             if current_small_size >= max_batch_size * 0.7:
@@ -117,7 +128,7 @@ def build_adaptive_batches(
 def process_task(task: dict) -> None:
     """
     Выполнить задачу импорта:
-    - Для папок: универсальная адаптивная обработка порциями по ~6-8 GB
+    - Для папок: универсальная адаптивная обработка порциями по ~2.5-3.5 GB
       с немедленной очисткой диска Colab и персистентным сохранением прогресса на Google Drive.
     - Для файлов: прямое скачивание и загрузка.
     """
@@ -183,8 +194,8 @@ def process_task(task: dict) -> None:
                     f"свободно {format_bytes(quota['free'])}."
                 )
 
-            # Универсальная адаптивная группировка по ~6-8 GB
-            batches = build_adaptive_batches(items, max_batch_size=8 * 1024 * 1024 * 1024)
+            # Универсальная адаптивная группировка по ~2.5-3.5 GB
+            batches = build_adaptive_batches(items, max_batch_size=DEFAULT_BATCH_SIZE)
 
             completed_batches = set(task.get("completed_batches") or [])
             done_bytes_accumulated = int(task.get("bytes_done") or 0)
@@ -588,7 +599,7 @@ def _process_pixeldrain_task(task: dict, task_dir: Path) -> None:
                     f"свободно {format_bytes(quota['free'])}."
                 )
 
-            # Адаптивная группировка по ~6-8 GB сегментам
+            # Адаптивная группировка по ~2.5-3.5 GB сегментам
             class _FakeItem:
                 def __init__(self, f: "PixeldrainFile"):
                     self.rel_path = f.file_id
@@ -597,7 +608,7 @@ def _process_pixeldrain_task(task: dict, task_dir: Path) -> None:
                     self._pd_file = f
 
             fake_items = [_FakeItem(f) for f in items]
-            batches = build_adaptive_batches(fake_items, max_batch_size=8 * 1024 * 1024 * 1024)
+            batches = build_adaptive_batches(fake_items, max_batch_size=DEFAULT_BATCH_SIZE)
 
             completed_batches = set(task.get("completed_batches") or [])
             done_bytes_accumulated = int(task.get("bytes_done") or 0)
