@@ -91,9 +91,17 @@ def _build_aria2c_cmd(
     connections: int = ARIA2_CONNECTIONS_PER_FILE,
     proxy: Optional[str] = None,
 ) -> List[str]:
-    """Собрать команду aria2c для скачивания одного файла."""
+    """Собрать команду aria2c для скачивания одного файла с упреждающей авторизацией."""
+    import base64
+    # Превентивная Basic-авторизация в заголовке (Pixeldrain API key как пароль):
+    # Pixeldrain отдаёт 403 если нет заголовка Authorization, а aria2c по умолчанию ждёт 401 challenge
+    auth_b64 = base64.b64encode(f":{api_key}".encode("utf-8")).decode("ascii")
+
     cmd = [
         "aria2c",
+        f"--header=Authorization: Basic {auth_b64}",
+        "--header=User-Agent: MegaGdriveImporter/2.0",
+        "--http-auth-challenge=false",   # слать заголовок сразу, не дожидаясь ответа сервера
         "--http-user=",                  # пустой username (Pixeldrain API)
         f"--http-passwd={api_key}",      # API-ключ как пароль (Basic Auth)
         f"-x{connections}",              # макс. соединений к серверу
