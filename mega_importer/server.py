@@ -263,6 +263,42 @@ def api_proxies_scrape():
     return jsonify({"message": "Запущен фоновый поиск и проверка бесплатных прокси..."})
 
 
+@app.get("/api/pixeldrain_settings")
+def api_get_pixeldrain_settings():
+    """Получить текущие настройки Pixeldrain (ключ и параллельные потоки)."""
+    from .pixeldrain import get_pixeldrain_api_key, get_pixeldrain_concurrency
+    return jsonify({
+        "api_key": get_pixeldrain_api_key(),
+        "concurrency": get_pixeldrain_concurrency(),
+    })
+
+
+@app.post("/api/pixeldrain_settings")
+def api_set_pixeldrain_settings():
+    """Сохранить настройки Pixeldrain (ключ и параллельные потоки)."""
+    from .state import save_tasks_to_disk
+    from .pixeldrain import PixeldrainSessionPool
+    data = request.get_json(force=True) or {}
+    with lock:
+        if "api_key" in data:
+            new_key = str(data.get("api_key", "")).strip()
+            STATE["pixeldrain_api_key"] = new_key
+            PixeldrainSessionPool.clear()
+        if "concurrency" in data:
+            try:
+                c = int(data["concurrency"])
+                STATE["pixeldrain_concurrency"] = max(1, min(64, c))
+            except (ValueError, TypeError):
+                pass
+        save_tasks_to_disk()
+    add_log(f"⚡ Настройки Pixeldrain обновлены: потоков = {STATE.get('pixeldrain_concurrency', 16)}.", "INFO")
+    return jsonify({
+        "status": "ok",
+        "api_key": STATE.get("pixeldrain_api_key", ""),
+        "concurrency": STATE.get("pixeldrain_concurrency", 16),
+    })
+
+
 @app.get("/api/pixeldrain_key")
 def api_get_pixeldrain_key():
     """Получить текущий сохранённый ключ Pixeldrain."""
@@ -274,10 +310,12 @@ def api_get_pixeldrain_key():
 def api_set_pixeldrain_key():
     """Сохранить API-ключ Pixeldrain."""
     from .state import save_tasks_to_disk
+    from .pixeldrain import PixeldrainSessionPool
     data = request.get_json(force=True) or {}
     key = str(data.get("api_key", "")).strip()
     with lock:
         STATE["pixeldrain_api_key"] = key
+        PixeldrainSessionPool.clear()
         save_tasks_to_disk()
     add_log("🔑 Pixeldrain API Key обновлён и сохранён на Google Диске.", "INFO")
     return jsonify({"status": "ok", "api_key": key})

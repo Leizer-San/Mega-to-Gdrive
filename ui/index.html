@@ -438,7 +438,7 @@ Pixeldrain: https://pixeldrain.com/u/ID или https://pixeldrain.com/l/ID"></te
           <div class="muted small" style="text-align:center; padding:20px;">Пул прокси пуст</div>
         </div>
 
-        <!-- Pixeldrain API Key -->
+        <!-- Pixeldrain API Key & Скорость -->
         <div style="margin-top:14px; padding-top:12px; border-top:1px solid var(--border);">
           <div class="muted small" style="margin-bottom:6px; font-weight:600; display:flex; justify-content:space-between; align-items:center;">
             <span>🔑 Pixeldrain API Key:</span>
@@ -450,6 +450,16 @@ Pixeldrain: https://pixeldrain.com/u/ID или https://pixeldrain.com/l/ID"></te
           </div>
           <div class="muted" style="font-size:11px; margin-top:4px; line-height:1.3;">
             Снимает капчи и суточные ограничения Pixeldrain.
+          </div>
+
+          <div style="margin-top:10px; display:flex; justify-content:space-between; align-items:center;">
+            <span class="small" style="font-weight:600;">⚡ Потоков скачивания:</span>
+            <select id="pdConcurrencySelect" onchange="savePixeldrainConcurrency()" style="font-size:12px; padding:4px 8px; background:#090f1d; border:1px solid var(--border); border-radius:6px; color:var(--text); font-weight:600;">
+              <option value="8">8 потоков (Стандарт)</option>
+              <option value="16" selected>16 потоков (Турбо 🚀)</option>
+              <option value="24">24 потока (Максимум 🔥)</option>
+              <option value="32">32 потока (Экстрим ⚡)</option>
+            </select>
           </div>
         </div>
 
@@ -1017,11 +1027,12 @@ async function clearAll(){
   } 
 }
 
-async function loadPixeldrainKey() {
+async function loadPixeldrainSettings() {
   try {
-    const res = await api("/api/pixeldrain_key");
-    if (res && res.api_key) {
-      $("pdApiKeyInput").value = res.api_key;
+    const res = await api("/api/pixeldrain_settings");
+    if (res) {
+      if (res.api_key) $("pdApiKeyInput").value = res.api_key;
+      if (res.concurrency) $("pdConcurrencySelect").value = String(res.concurrency);
     }
   } catch(e) {}
 }
@@ -1029,11 +1040,12 @@ async function loadPixeldrainKey() {
 async function savePixeldrainKey() {
   const key = ($("pdApiKeyInput").value || "").trim();
   try {
-    await api("/api/pixeldrain_key", {
+    await api("/api/pixeldrain_settings", {
       method: "POST",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({api_key: key})
     });
+    $("pdKeySavedBadge").textContent = "Сохранено ✓";
     $("pdKeySavedBadge").style.display = "inline";
     setTimeout(() => { $("pdKeySavedBadge").style.display = "none"; }, 2500);
   } catch(e) {
@@ -1041,7 +1053,23 @@ async function savePixeldrainKey() {
   }
 }
 
-setInterval(refresh,2000); refresh(); loadPixeldrainKey();
+async function savePixeldrainConcurrency() {
+  const c = parseInt($("pdConcurrencySelect").value) || 16;
+  try {
+    await api("/api/pixeldrain_settings", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({concurrency: c})
+    });
+    $("pdKeySavedBadge").textContent = "Сохранено ✓";
+    $("pdKeySavedBadge").style.display = "inline";
+    setTimeout(() => { $("pdKeySavedBadge").style.display = "none"; }, 2000);
+  } catch(e) {
+    alert("Ошибка сохранения настроек: " + e.message);
+  }
+}
+
+setInterval(refresh,2000); refresh(); loadPixeldrainSettings();
 </script>
 </body>
 </html>

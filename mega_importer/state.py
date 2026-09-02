@@ -19,15 +19,16 @@ worker_thread: threading.Thread | None = None
 
 # ── Основной словарь состояния ───────────────────────────────────────────────
 STATE: dict = {
-    "running":            False,
-    "current_task":       None,
-    "current_file":       None,
-    "overall_progress":   0.0,
-    "message":            "Готово к работе",
-    "error":              None,
-    "logs":               [],
-    "tasks":              [],
-    "pixeldrain_api_key": "",
+    "running":                False,
+    "current_task":           None,
+    "current_file":           None,
+    "overall_progress":       0.0,
+    "message":                "Готово к работе",
+    "error":                  None,
+    "logs":                   [],
+    "tasks":                  [],
+    "pixeldrain_api_key":     "",
+    "pixeldrain_concurrency": 16,
 }
 
 
@@ -46,6 +47,11 @@ def load_tasks_from_disk() -> None:
                 saved_tasks = data.get("tasks", [])
                 if "pixeldrain_api_key" in data:
                     STATE["pixeldrain_api_key"] = str(data["pixeldrain_api_key"])
+                if "pixeldrain_concurrency" in data:
+                    try:
+                        STATE["pixeldrain_concurrency"] = int(data["pixeldrain_concurrency"])
+                    except (ValueError, TypeError):
+                        pass
             else:
                 saved_tasks = []
 
@@ -68,6 +74,7 @@ def save_tasks_to_disk() -> None:
         data = {
             "tasks": STATE["tasks"],
             "pixeldrain_api_key": STATE.get("pixeldrain_api_key", ""),
+            "pixeldrain_concurrency": STATE.get("pixeldrain_concurrency", 16),
         }
         with open(STATE_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)

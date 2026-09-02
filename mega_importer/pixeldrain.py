@@ -137,17 +137,78 @@ def get_pixeldrain_api_key() -> str:
     return str(key).strip()
 
 
+def get_pixeldrain_concurrency() -> int:
+    """Получить количество параллельных потоков скачивания для папок Pixeldrain."""
+    from .state import STATE
+    val = STATE.get("pixeldrain_concurrency")
+    if val:
+        try:
+            return max(1, min(64, int(val)))
+        except (ValueError, TypeError):
+            pass
+    # Если есть API-ключ (Premium) — по умолчанию 16 потоков (Турбо), иначе 8
+    if get_pixeldrain_api_key():
+        return 16
+    return 8
+
+
+def get_pixeldrain_chunk_workers() -> int:
+    """Количество параллельных чанков для одного файла."""
+    if get_pixeldrain_api_key():
+        return 8
+    return 4
+
+
+class PixeldrainSessionPool:
+    """Пул переиспользуемых сессий с HTTP Keep-Alive для максимальной скорости без повторных TLS-рукопожатий."""
+    _direct_session: Optional[requests.Session] = None
+    _proxy_sessions: dict[str, requests.Session] = {}
+    _lock = threading.Lock()
+
+    @classmethod
+    def get_session(cls, req_proxies: Optional[dict] = None) -> requests.Session:
+        with cls._lock:
+            if not req_proxies:
+                if cls._direct_session is None:
+                    cls._direct_session = _pd_session(None)
+                return cls._direct_session
+
+            pkey = str(sorted(req_proxies.items()))
+            if pkey not in cls._proxy_sessions:
+                cls._proxy_sessions[pkey] = _pd_session(req_proxies)
+            return cls._proxy_sessions[pkey]
+
+    @classmethod
+    def clear(cls) -> None:
+        with cls._lock:
+            if cls._direct_session:
+                try:
+                    cls._direct_session.close()
+                except Exception:
+                    pass
+                cls._direct_session = None
+            for s in cls._proxy_sessions.values():
+                try:
+                    s.close()
+                except Exception:
+                    pass
+            cls._proxy_sessions.clear()
+
+
 def _pd_session(proxies: Optional[dict] = None) -> requests.Session:
     """Создать requests.Session с connection pooling и авторизацией Pixeldrain (при наличии ключа)."""
     session = requests.Session()
     adapter = HTTPAdapter(
-        pool_connections=16,
-        pool_maxsize=32,
-        max_retries=Retry(total=2, backoff_factor=0.3),
+        pool_connections=64,
+        pool_maxsize=64,
+        max_retries=Retry(total=3, backoff_factor=0.3, status_forcelist=[500, 502, 503, 504]),
     )
     session.mount("https://", adapter)
     session.mount("http://", adapter)
-    session.headers.update({"User-Agent": "MegaGdriveImporter/2.0"})
+    session.headers.update({
+        "User-Agent": "MegaGdriveImporter/2.0",
+        "Accept-Encoding": "identity",
+    })
     if proxies:
         session.proxies.update(proxies)
 
@@ -519,7 +580,7 @@ class PixeldrainFileDownloader:
             )
 
             try:
-                session = _pd_session(req_proxies)
+                session = PixeldrainSessionPool.get_session(req_proxies)
                 with session.get(
                     cdn_url,
                     headers=headers,
@@ -585,9 +646,9 @@ class PixeldrainFileDownloader:
                     if resp.status_code not in (200, 206):
                         raise RuntimeError(f"Pixeldrain: HTTP {resp.status_code}")
 
-                    # Читаем и пишем в .part-файл
+                    # Читаем и пишем в .part-файл (буфер 1 MB для максимальной пропускной способности)
                     buf = bytearray()
-                    for chunk_bytes in resp.iter_content(chunk_size=131072):
+                    for chunk_bytes in resp.iter_content(chunk_size=1048576):
                         if stop_event.is_set():
                             raise RuntimeError("Остановлено пользователем")
                         if chunk_bytes:
@@ -627,9 +688,11 @@ def download_pixeldrain_file(
     pd_file: PixeldrainFile,
     output_path: Path,
     tracker: PixeldrainProgressTracker,
-    concurrency: int = PD_PARALLEL_CHUNK_WORKERS,
+    concurrency: Optional[int] = None,
 ) -> Path:
     """Скачать один файл Pixeldrain в output_path."""
+    if concurrency is None:
+        concurrency = get_pixeldrain_chunk_workers()
     downloader = PixeldrainFileDownloader(tracker, concurrency=concurrency)
     return downloader.download(pd_file, output_path)
 
@@ -638,7 +701,7 @@ def download_pixeldrain_list_items(
     files: List[PixeldrainFile],
     dest_dir: Path,
     tracker: PixeldrainProgressTracker,
-    concurrency: int = PD_PARALLEL_FOLDER_WORKERS,
+    concurrency: Optional[int] = None,
 ) -> List[Path]:
     """
     Скачать несколько файлов из списка Pixeldrain в dest_dir.
@@ -648,8 +711,13 @@ def download_pixeldrain_list_items(
     if not files:
         return []
 
+    if concurrency is None:
+        concurrency = get_pixeldrain_concurrency()
+
     dest_dir.mkdir(parents=True, exist_ok=True)
-    downloader = PixeldrainFileDownloader(tracker, concurrency=1)
+    # При наличии API-ключа (Premium) скачиваем файлы в 2 чанка одновременно
+    file_chunk_concurrency = 2 if get_pixeldrain_api_key() else 1
+    downloader = PixeldrainFileDownloader(tracker, concurrency=file_chunk_concurrency)
     downloaded: List[Path] = []
 
     def _download_one(pd_file: PixeldrainFile) -> Optional[Path]:

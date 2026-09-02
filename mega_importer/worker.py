@@ -488,8 +488,8 @@ def _process_pixeldrain_task(task: dict, task_dir: Path) -> None:
         PixeldrainProgressTracker,
         download_pixeldrain_file,
         download_pixeldrain_list_items,
-        PD_PARALLEL_CHUNK_WORKERS,
-        PD_PARALLEL_FOLDER_WORKERS,
+        get_pixeldrain_chunk_workers,
+        get_pixeldrain_concurrency,
     )
     from .helpers import sanitize_filename
     from .mega import zip_directory
@@ -525,7 +525,7 @@ def _process_pixeldrain_task(task: dict, task_dir: Path) -> None:
 
             tracker = PixeldrainProgressTracker(pd_file.size, task_id=tid)
             out_path = task_dir / sanitize_filename(pd_file.name)
-            download_pixeldrain_file(pd_file, out_path, tracker, concurrency=PD_PARALLEL_CHUNK_WORKERS)
+            download_pixeldrain_file(pd_file, out_path, tracker, concurrency=get_pixeldrain_chunk_workers())
             add_log(f"✅ Файл скачан: {pd_file.name} ({format_bytes(pd_file.size)})", "OK")
 
             # Сжатие изображений
@@ -645,7 +645,7 @@ def _process_pixeldrain_task(task: dict, task_dir: Path) -> None:
                     batch_pd_files,
                     folder_root,
                     tracker,
-                    concurrency=PD_PARALLEL_FOLDER_WORKERS,
+                    concurrency=get_pixeldrain_concurrency(),
                 )
 
                 # 2. Сжатие изображений в сегменте
