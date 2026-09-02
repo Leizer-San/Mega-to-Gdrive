@@ -21,3 +21,8 @@ UPLOAD_CHUNK       = 100 * 1024 ** 2   # 100 MB — размер чанка resu
 MAX_RETRIES        = 3                  # Максимальное количество повторных попыток
 DEFAULT_BATCH_SIZE = int(3.5 * 1024 ** 3)  # 3.5 GB — адаптивный сегмент (наполнение ~2.5 - 3.5 GB)
 
+# ── Pixeldrain ───────────────────────────────────────────────────────────────
+import os
+PIXELDRAIN_API_KEY = os.environ.get("PIXELDRAIN_API_KEY", "")
+
+

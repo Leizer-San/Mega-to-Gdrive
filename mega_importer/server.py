@@ -143,6 +143,10 @@ def api_start():
     global _worker_thread
     with lock:
         restarted = restart_errored_tasks()
+        # Если все прокси помечены как quota_exceeded, возвращаем их в online
+        from .proxy import proxy_manager
+        if not proxy_manager.get_available_proxies():
+            proxy_manager.reset_quota_marks()
         stop_event.clear()
         if not (_worker_thread and _worker_thread.is_alive()):
             _worker_thread = threading.Thread(target=worker, daemon=True)
@@ -157,6 +161,9 @@ def api_restart_errors():
     global _worker_thread
     with lock:
         restarted = restart_errored_tasks()
+        from .proxy import proxy_manager
+        if not proxy_manager.get_available_proxies():
+            proxy_manager.reset_quota_marks()
         stop_event.clear()
         if not (_worker_thread and _worker_thread.is_alive()):
             _worker_thread = threading.Thread(target=worker, daemon=True)
@@ -254,6 +261,26 @@ def api_proxies_scrape():
         daemon=True,
     ).start()
     return jsonify({"message": "Запущен фоновый поиск и проверка бесплатных прокси..."})
+
+
+@app.get("/api/pixeldrain_key")
+def api_get_pixeldrain_key():
+    """Получить текущий сохранённый ключ Pixeldrain."""
+    from .pixeldrain import get_pixeldrain_api_key
+    return jsonify({"api_key": get_pixeldrain_api_key()})
+
+
+@app.post("/api/pixeldrain_key")
+def api_set_pixeldrain_key():
+    """Сохранить API-ключ Pixeldrain."""
+    from .state import save_tasks_to_disk
+    data = request.get_json(force=True) or {}
+    key = str(data.get("api_key", "")).strip()
+    with lock:
+        STATE["pixeldrain_api_key"] = key
+        save_tasks_to_disk()
+    add_log("🔑 Pixeldrain API Key обновлён и сохранён на Google Диске.", "INFO")
+    return jsonify({"status": "ok", "api_key": key})
 
 
 

@@ -46,15 +46,27 @@ PD_MAX_CHUNK_RETRIES = 10
 PD_PARALLEL_FOLDER_WORKERS = 8         # параллельных файлов из списка
 PD_PARALLEL_CHUNK_WORKERS = 4          # параллельных чанков одного файла
 
-# Коды ошибок Pixeldrain, означающих превышение лимита
-_PIXELDRAIN_LIMIT_VALUES = {
+# ── Коды ошибок Pixeldrain ───────────────────────────────────────────────────
+# Ошибки уровня IP/сети (ротируем прокси):
+_PIXELDRAIN_IP_LIMIT_VALUES = {
     "ip_download_limited_captcha_required",
     "transfer_limit_exceeded",
     "download_limit_exceeded",
     "server_overload_captcha_required",
     "max_concurrent_downloads",
-    "file_rate_limited_captcha_required",
 }
+
+# Ошибки уровня конкретного файла (смена прокси бессмысленна):
+_PIXELDRAIN_FILE_LIMIT_VALUES = {
+    "file_rate_limited_captcha_required",
+    "file_rate_limited",
+    "file_viewer_only",
+}
+
+
+class PixeldrainFileRateLimitedError(RuntimeError):
+    """Файл временно заблокирован сервером Pixeldrain (file_rate_limited_captcha_required)."""
+    pass
 
 
 # ── Dataclasses ────────────────────────────────────────────────────────────────
@@ -117,8 +129,16 @@ def parse_pixeldrain_url(url: str) -> dict:
 
 # ── API-клиент Pixeldrain ──────────────────────────────────────────────────────
 
+def get_pixeldrain_api_key() -> str:
+    """Получить API-ключ Pixeldrain из STATE, config или переменной окружения."""
+    from .state import STATE
+    from . import config
+    key = STATE.get("pixeldrain_api_key") or getattr(config, "PIXELDRAIN_API_KEY", "") or os.environ.get("PIXELDRAIN_API_KEY", "")
+    return str(key).strip()
+
+
 def _pd_session(proxies: Optional[dict] = None) -> requests.Session:
-    """Создать requests.Session с connection pooling."""
+    """Создать requests.Session с connection pooling и авторизацией Pixeldrain (при наличии ключа)."""
     session = requests.Session()
     adapter = HTTPAdapter(
         pool_connections=16,
@@ -127,8 +147,14 @@ def _pd_session(proxies: Optional[dict] = None) -> requests.Session:
     )
     session.mount("https://", adapter)
     session.mount("http://", adapter)
+    session.headers.update({"User-Agent": "MegaGdriveImporter/2.0"})
     if proxies:
         session.proxies.update(proxies)
+
+    api_key = get_pixeldrain_api_key()
+    if api_key:
+        session.auth = ("", api_key)
+
     return session
 
 
@@ -523,9 +549,22 @@ class PixeldrainFileDownloader:
                         try:
                             err_data = resp.json()
                             err_value = err_data.get("value", "")
+                            err_msg = err_data.get("message", "")
                         except Exception:
                             err_value = ""
-                        if err_value in _PIXELDRAIN_LIMIT_VALUES:
+                            err_msg = ""
+
+                        # 1. Лимит конкретного файла на сервере Pixeldrain
+                        # Смена прокси не поможет, файл закрыт для анонимных скачиваний.
+                        # НЕ штрафуем прокси!
+                        if err_value in _PIXELDRAIN_FILE_LIMIT_VALUES:
+                            raise PixeldrainFileRateLimitedError(
+                                f"Файл «{pd_file.name}» заблокирован Pixeldrain ({err_value}). "
+                                f"Суточный лимит файла (требуется капча на сайте или Pixeldrain API Key)."
+                            )
+
+                        # 2. Лимит по IP/прокси (ротация)
+                        if err_value in _PIXELDRAIN_IP_LIMIT_VALUES:
                             add_log(
                                 f"⚠️ Pixeldrain: лимит скачивания на {proxy_name} ({err_value}). Ротация прокси...",
                                 "WARNING",
@@ -540,7 +579,8 @@ class PixeldrainFileDownloader:
                                     proxy_manager.ensure_working_proxies(min_count=2, target_count=35)
                             time.sleep(2)
                             continue
-                        raise RuntimeError(f"Pixeldrain: HTTP 403 ({err_value or 'запрещено'})")
+
+                        raise RuntimeError(f"Pixeldrain: HTTP 403 ({err_value or err_msg or 'запрещено'})")
 
                     if resp.status_code not in (200, 206):
                         raise RuntimeError(f"Pixeldrain: HTTP {resp.status_code}")
@@ -565,6 +605,9 @@ class PixeldrainFileDownloader:
                             f.write(buf)
                     return
 
+            except PixeldrainFileRateLimitedError:
+                # Ни в коем случае не трогаем статус прокси! Прокси полностью рабочий.
+                raise
             except Exception as e:
                 if stop_event.is_set():
                     raise RuntimeError("Остановлено пользователем")
@@ -609,7 +652,7 @@ def download_pixeldrain_list_items(
     downloader = PixeldrainFileDownloader(tracker, concurrency=1)
     downloaded: List[Path] = []
 
-    def _download_one(pd_file: PixeldrainFile) -> Path:
+    def _download_one(pd_file: PixeldrainFile) -> Optional[Path]:
         if stop_event.is_set():
             raise RuntimeError("Остановлено пользователем")
         out = dest_dir / sanitize_filename(pd_file.name)
@@ -621,6 +664,12 @@ def download_pixeldrain_list_items(
         for file_attempt in range(3):
             try:
                 return downloader.download(pd_file, out)
+            except PixeldrainFileRateLimitedError:
+                # Если файл заблокирован Pixeldrain — ретраить бесполезно, очищаем временные файлы
+                part = out.with_suffix(out.suffix + ".part")
+                part.unlink(missing_ok=True)
+                _get_sidecar_path(part).unlink(missing_ok=True)
+                raise
             except Exception as e:
                 if stop_event.is_set():
                     raise
@@ -629,6 +678,7 @@ def download_pixeldrain_list_items(
                 time.sleep(1 + file_attempt)
 
     workers_count = min(concurrency, max(1, len(files)))
+    skipped_files: List[PixeldrainFile] = []
     with ThreadPoolExecutor(max_workers=workers_count) as executor:
         futures = {executor.submit(_download_one, f): f for f in files}
         for future in as_completed(futures):
@@ -638,9 +688,26 @@ def download_pixeldrain_list_items(
             pd_file = futures[future]
             try:
                 result = future.result()
-                downloaded.append(result)
+                if result:
+                    downloaded.append(result)
+            except PixeldrainFileRateLimitedError as e:
+                skipped_files.append(pd_file)
+                add_log(
+                    f"⚠️ Pixeldrain: файл «{pd_file.name}» заблокирован сервисом "
+                    f"(file_rate_limited_captcha_required: суточный лимит файла на сервере). Пропуск файла...",
+                    "WARNING",
+                )
+                tracker.file_finished()
+                tracker.add_bytes(pd_file.size)
             except Exception as e:
                 executor.shutdown(wait=False, cancel_futures=True)
                 raise RuntimeError(f"Ошибка скачивания '{pd_file.name}': {e}") from e
+
+    if skipped_files:
+        add_log(
+            f"ℹ️ В списке Pixeldrain пропущено {len(skipped_files)} файлов из-за ограничений Pixeldrain. "
+            f"Успешно скачано: {len(downloaded)} файлов.",
+            "INFO",
+        )
 
     return downloaded

@@ -19,14 +19,15 @@ worker_thread: threading.Thread | None = None
 
 # ── Основной словарь состояния ───────────────────────────────────────────────
 STATE: dict = {
-    "running":          False,
-    "current_task":     None,
-    "current_file":     None,
-    "overall_progress": 0.0,
-    "message":          "Готово к работе",
-    "error":            None,
-    "logs":             [],
-    "tasks":            [],
+    "running":            False,
+    "current_task":       None,
+    "current_file":       None,
+    "overall_progress":   0.0,
+    "message":            "Готово к работе",
+    "error":              None,
+    "logs":               [],
+    "tasks":              [],
+    "pixeldrain_api_key": "",
 }
 
 
@@ -43,6 +44,8 @@ def load_tasks_from_disk() -> None:
                 saved_tasks = data
             elif isinstance(data, dict):
                 saved_tasks = data.get("tasks", [])
+                if "pixeldrain_api_key" in data:
+                    STATE["pixeldrain_api_key"] = str(data["pixeldrain_api_key"])
             else:
                 saved_tasks = []
 
@@ -60,10 +63,14 @@ def load_tasks_from_disk() -> None:
 
 
 def save_tasks_to_disk() -> None:
-    """Сохранить текущую очередь в JSON-файл на Google Drive."""
+    """Сохранить текущую очередь и настройки в JSON-файл на Google Drive."""
     try:
+        data = {
+            "tasks": STATE["tasks"],
+            "pixeldrain_api_key": STATE.get("pixeldrain_api_key", ""),
+        }
         with open(STATE_FILE, "w", encoding="utf-8") as f:
-            json.dump(STATE["tasks"], f, ensure_ascii=False, indent=2)
+            json.dump(data, f, ensure_ascii=False, indent=2)
     except Exception:
         pass
 
