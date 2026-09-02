@@ -661,11 +661,11 @@ def _process_pixeldrain_task(task: dict, task_dir: Path) -> None:
                 api_key = get_pixeldrain_api_key()
                 from .aria2_downloader import is_aria2c_available, download_pixeldrain_list_aria2c, ARIA2_CONNECTIONS_PER_FILE
                 if api_key and is_aria2c_available():
-                    # Premium + aria2c: каждый файл качается в 16 соединений,
-                    # 5 файлов параллельно = 80 потоков нативного кода C
-                    concurrency_files = min(get_pixeldrain_concurrency(), 8)
+                    # Ограничиваем общее число TCP-соединений:
+                    # 4 файла × 8 соед. = 32 (комфортно для Pixeldrain CDN)
+                    concurrency_files = min(get_pixeldrain_concurrency(), 4)
                     add_log(
-                        f"🚀 aria2c режим: {concurrency_files} файлов × {ARIA2_CONNECTIONS_PER_FILE} соединений",
+                        f"🚀 aria2c режим: {concurrency_files} файлов × {ARIA2_CONNECTIONS_PER_FILE} = {concurrency_files * ARIA2_CONNECTIONS_PER_FILE} TCP-соединений",
                         "INFO",
                     )
                     downloaded_paths, skipped = download_pixeldrain_list_aria2c(

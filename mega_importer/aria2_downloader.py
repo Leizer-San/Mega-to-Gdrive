@@ -25,11 +25,13 @@ from .helpers import add_log, sanitize_filename
 from .state import stop_event
 
 # Количество параллельных соединений для одного файла (aria2c -x / -s)
-ARIA2_CONNECTIONS_PER_FILE = 16
+ARIA2_CONNECTIONS_PER_FILE = 8          # 8 соед. × N файлов = разумное общее число
 # Максимальное количество файлов, скачиваемых одновременно
-ARIA2_MAX_PARALLEL_DOWNLOADS = 5
+ARIA2_MAX_PARALLEL_DOWNLOADS = 4        # 4 файла × 8 соед. = 32 соединения всего
 ARIA2_CONNECT_TIMEOUT = 30
 ARIA2_TIMEOUT = 120
+# Макс. время (сек) без прогресса перед предупреждением в лог
+ARIA2_STALL_WARN_SECS = 180             # 3 минуты
 
 _aria2c_available: Optional[bool] = None
 _aria2c_lock = threading.Lock()
@@ -61,6 +63,27 @@ def is_aria2c_available() -> bool:
         return False
 
 
+import queue
+import re
+
+# Регулярные выражения для парсинга вывода aria2c summary:
+# [#2089b0 400.0KiB/33.2MiB(1%) CN:1 DL:115.7KiB ETA:4m51s]
+_ARIA2_SUMMARY_RE = re.compile(
+    r"\[#[0-9a-fA-F]+\s+([\d\.]+)(B|KiB|MiB|GiB|TiB|KB|MB|GB)/"
+)
+_ARIA2_PCT_RE = re.compile(r"\((\d+)%\)")
+_UNIT_MULTIPLIERS = {
+    "B": 1,
+    "KiB": 1024,
+    "MiB": 1024**2,
+    "GiB": 1024**3,
+    "TiB": 1024**4,
+    "KB": 1000,
+    "MB": 1000**2,
+    "GB": 1000**3,
+}
+
+
 def _build_aria2c_cmd(
     url: str,
     output_path: Path,
@@ -77,15 +100,15 @@ def _build_aria2c_cmd(
         f"-s{connections}",              # разбить файл на N сегментов
         "-c",                            # продолжить прерванную загрузку
         "--auto-file-renaming=false",
-        "--file-allocation=none",        # НЕ делать pre-alloc — файл растёт вместе с прогрессом
         f"--connect-timeout={ARIA2_CONNECT_TIMEOUT}",
         f"--timeout={ARIA2_TIMEOUT}",
-        "--retry-wait=15",               # 15 сек между попытками (временные ошибки CDN)
-        "--max-tries=20",                # до 20 попыток на файл
+        "--retry-wait=10",               # 10 сек между попытками
+        "--max-tries=15",                # до 15 попыток
+        "--console-log-level=notice",
+        "--summary-interval=1",          # вывод прогресса каждую 1 секунду
+        "--show-console-readout=false",  # чистый построчный вывод без \r
         "-d", str(output_path.parent),
         "-o", output_path.name,
-        "--console-log-level=warn",
-        "--summary-interval=0",
     ]
     if proxy:
         cmd.extend([f"--all-proxy={proxy}"])
@@ -105,7 +128,7 @@ def download_with_aria2c(
 ) -> Path:
     """
     Скачать один файл Pixeldrain через aria2c.
-    Мониторит прогресс через размер файла на диске (без pre-allocation).
+    Отслеживает реальный сетевой прогресс через разбор stdout aria2c каждую секунду.
     """
     url = f"https://pixeldrain.com/api/file/{file_id}"
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -113,29 +136,42 @@ def download_with_aria2c(
     cmd = _build_aria2c_cmd(url, output_path, api_key, connections, proxy)
     aria2_ctrl = output_path.with_suffix(output_path.suffix + ".aria2")
 
-    # Удаляем старый .aria2 файл прогресса и pre-allocated файл перед новым стартом
-    # (они могли остаться от предыдущего прерванного скачивания)
-    aria2_ctrl.unlink(missing_ok=True)
-    if output_path.exists() and output_path.stat().st_size == file_size:
-        # Файл уже полностью скачан — не перескачиваем
+    # Если файл уже скачан полностью и нет контрольного .aria2 — пропускаем
+    if output_path.exists() and not aria2_ctrl.exists() and output_path.stat().st_size == file_size:
         tracker.add_bytes(file_size)
         tracker.file_finished()
         return output_path
-    # Убираем неполный файл (может быть pre-allocated мусор от предыдущего запуска)
-    if output_path.exists():
-        output_path.unlink()
 
     try:
         process = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            universal_newlines=True,
         )
 
-        last_size = 0
-        last_progress_time = time.time()
+        q: queue.Queue[Optional[str]] = queue.Queue()
 
-        while process.poll() is None:
+        def _reader():
+            try:
+                for line in iter(process.stdout.readline, ""):
+                    q.put(line)
+            except Exception:
+                pass
+            finally:
+                q.put(None)
+
+        reader_thread = threading.Thread(target=_reader, daemon=True)
+        reader_thread.start()
+
+        last_reported_bytes = 0
+        last_progress_time = time.time()
+        stall_warned = False
+        output_tail: List[str] = []
+
+        while True:
             if stop_event.is_set():
                 process.terminate()
                 try:
@@ -145,28 +181,62 @@ def download_with_aria2c(
                 aria2_ctrl.unlink(missing_ok=True)
                 raise RuntimeError("Остановлено пользователем")
 
-            if output_path.exists():
-                current_size = output_path.stat().st_size
-                delta = current_size - last_size
-                if delta > 0:
-                    tracker.add_bytes(delta)
-                    last_size = current_size
-                    last_progress_time = time.time()
+            try:
+                line = q.get(timeout=0.5)
+            except queue.Empty:
+                if process.poll() is not None:
+                    break
+                # Предупреждение если прогресс не менялся долго
+                if not stall_warned and (time.time() - last_progress_time) > ARIA2_STALL_WARN_SECS:
+                    add_log(
+                        f"⏳ aria2c: '{file_name}' не имеет прогресса уже 3 минуты. Идёт retry...",
+                        "WARNING",
+                    )
+                    stall_warned = True
+                continue
 
-            time.sleep(0.5)
+            if line is None:  # EOF
+                break
 
-        rc = process.returncode
-        if rc != 0:
-            stderr_bytes = process.stderr.read() if process.stderr else b""
-            stderr = stderr_bytes.decode("utf-8", errors="replace") if isinstance(stderr_bytes, bytes) else str(stderr_bytes)
-            raise RuntimeError(f"aria2c завершился с кодом {rc}: {stderr[:300]}")
+            stripped = line.strip()
+            if stripped:
+                output_tail.append(stripped)
+                if len(output_tail) > 20:
+                    output_tail.pop(0)
 
-        # Последний замер прогресса
-        if output_path.exists():
-            final_size = output_path.stat().st_size
-            delta = final_size - last_size
-            if delta > 0:
+            # Парсим байты из строки статуса aria2c
+            current_done = None
+            m = _ARIA2_SUMMARY_RE.search(stripped)
+            if m:
+                try:
+                    val = float(m.group(1))
+                    unit = m.group(2)
+                    current_done = int(val * _UNIT_MULTIPLIERS.get(unit, 1))
+                except Exception:
+                    pass
+            elif _ARIA2_PCT_RE.search(stripped):
+                try:
+                    m_pct = _ARIA2_PCT_RE.search(stripped)
+                    pct_val = int(m_pct.group(1))
+                    current_done = int(file_size * pct_val / 100)
+                except Exception:
+                    pass
+
+            if current_done is not None and current_done > last_reported_bytes:
+                delta = current_done - last_reported_bytes
                 tracker.add_bytes(delta)
+                last_reported_bytes = current_done
+                last_progress_time = time.time()
+                stall_warned = False
+
+        rc = process.wait()
+        if rc != 0:
+            tail_msg = " | ".join(output_tail[-3:]) if output_tail else ""
+            raise RuntimeError(f"aria2c завершился с кодом {rc}: {tail_msg[:300]}")
+
+        # Учитываем оставшиеся байты до полного размера файла
+        if file_size > last_reported_bytes:
+            tracker.add_bytes(file_size - last_reported_bytes)
 
         tracker.file_finished()
         return output_path
@@ -188,6 +258,7 @@ def download_pixeldrain_list_aria2c(
 ) -> Tuple[List[Path], List]:
     """
     Скачать список файлов Pixeldrain через aria2c.
+    При ошибке любого файла — автоматический fallback на Python-загрузчик (файл не теряется!).
     Возвращает (downloaded_paths, skipped_files).
     """
     if not files:
@@ -213,16 +284,28 @@ def download_pixeldrain_list_aria2c(
         if any(f.name == pd_file.name for f in files if f is not pd_file):
             out = out.with_name(f"{out.stem}_{pd_file.file_id}{out.suffix}")
 
-        return download_with_aria2c(
-            file_id=pd_file.file_id,
-            file_name=pd_file.name,
-            file_size=pd_file.size,
-            output_path=out,
-            api_key=api_key,
-            tracker=tracker,
-            connections=connections_per_file,
-            proxy=proxy,
-        )
+        try:
+            return download_with_aria2c(
+                file_id=pd_file.file_id,
+                file_name=pd_file.name,
+                file_size=pd_file.size,
+                output_path=out,
+                api_key=api_key,
+                tracker=tracker,
+                connections=connections_per_file,
+                proxy=proxy,
+            )
+        except RuntimeError as err:
+            if "Остановлено" in str(err):
+                raise
+            # Fallback на Python-загрузчик (на случай сбоя aria2c)
+            add_log(
+                f"⚠️ aria2c: сбой '{pd_file.name}' ({err}). Докачиваем через встроенный Python-загрузчик...",
+                "WARNING",
+            )
+            from .pixeldrain import PixeldrainFileDownloader
+            py_downloader = PixeldrainFileDownloader(tracker, concurrency=4)
+            return py_downloader.download(pd_file, out)
 
     workers = min(concurrency, max(1, len(files)))
     with ThreadPoolExecutor(max_workers=workers) as executor:
@@ -236,14 +319,11 @@ def download_pixeldrain_list_aria2c(
                 result = future.result()
                 if result:
                     downloaded.append(result)
-            except RuntimeError as e:
-                if "Остановлено" in str(e):
-                    executor.shutdown(wait=False, cancel_futures=True)
-                    raise
-                add_log(f"⚠️ aria2c: ошибка скачивания '{pd_file.name}': {e}", "WARNING")
-                skipped.append(pd_file)
             except Exception as e:
-                executor.shutdown(wait=False, cancel_futures=True)
-                raise RuntimeError(f"Ошибка скачивания '{pd_file.name}': {e}") from e
+                if stop_event.is_set() or "Остановлено" in str(e):
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    raise RuntimeError("Остановлено пользователем") from e
+                add_log(f"❌ Ошибка скачивания '{pd_file.name}': {e}", "ERROR")
+                skipped.append(pd_file)
 
     return downloaded, skipped
