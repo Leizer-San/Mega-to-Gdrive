@@ -79,8 +79,8 @@ def _build_aria2c_cmd(
         "--auto-file-renaming=false",
         f"--connect-timeout={ARIA2_CONNECT_TIMEOUT}",
         f"--timeout={ARIA2_TIMEOUT}",
-        "--retry-wait=3",
-        "--max-tries=5",
+        "--retry-wait=15",               # 15 сек между попытками (временные ошибки CDN)
+        "--max-tries=20",                # до 20 попыток на файл
         "-d", str(output_path.parent),
         "-o", output_path.name,
         "--console-log-level=warn",
